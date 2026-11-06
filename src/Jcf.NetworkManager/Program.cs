@@ -23,6 +23,11 @@ var secureConfigurationFile=Environment.GetEnvironmentVariable("JCF_CONFIG_FILE"
 if(!string.IsNullOrWhiteSpace(secureConfigurationFile))
     builder.Configuration.AddJsonFile(secureConfigurationFile,optional:false,reloadOnChange:false);
 var demo=builder.Configuration.GetValue<bool>("Jcf:DemoMode");
+var temporaryHttp=builder.Configuration.GetValue<bool>("Jcf:TemporaryHttp");
+// This temporary private-network HTTP mode is NOT production-grade transport security.
+// It must be explicitly enabled. Real Identity and SQL remain mandatory.
+if(temporaryHttp && (demo || !builder.Environment.IsProduction()))
+    throw new InvalidOperationException("TemporaryHttp is available only for real SQL Identity in Production; demonstration authentication is never exposed.");
 // Sample data is independent of authentication: production identity + SQL + simulated inventory.
 if(builder.Environment.IsProduction() && !demo && !string.IsNullOrWhiteSpace(secureConfigurationFile))
 {
@@ -124,7 +129,7 @@ else
     builder.Services.ConfigureApplicationCookie(o=> {
         o.Cookie.Name="JcfNetworkManager.Session";
         o.Cookie.HttpOnly=true;
-        o.Cookie.SecurePolicy=CookieSecurePolicy.Always;
+        o.Cookie.SecurePolicy=temporaryHttp ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
         o.Cookie.SameSite=SameSiteMode.Lax;
         o.ExpireTimeSpan=TimeSpan.FromHours(8);
         o.SlidingExpiration=false;
@@ -188,7 +193,7 @@ app.Use(async (context,next)=>{
         "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
     await next();
 });
-if(!demo) {app.UseHsts();app.UseHttpsRedirection();}
+if(!demo && !temporaryHttp) {app.UseHsts();app.UseHttpsRedirection();}
 app.UseStaticFiles();
 app.UseRouting();
 app.UseRateLimiter();
