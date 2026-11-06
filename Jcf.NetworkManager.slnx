@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Jcf.NetworkManager/Jcf.NetworkManager.csproj" />
+  <Project Path="tests/Jcf.NetworkManager.Tests.csproj" />
+</Solution>

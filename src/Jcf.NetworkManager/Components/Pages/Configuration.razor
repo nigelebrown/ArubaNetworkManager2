@@ -1,0 +1,81 @@
+@page "/configuration"
+@attribute [Authorize]
+@using System.Text.Json
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject ChangeWorkflowService Changes
+@inject AuthenticationStateProvider Authentication
+<h1>Configuration proposals</h1>
+<p class="lede">Prepare wireless and switch configuration changes for approval. Creating a proposal does not modify a device.</p>
+<div class="banner">JCF RF policy: 20/40 MHz only (2.4 GHz stays 20 MHz); 5 GHz DFS channels 52–64 and 100–144 are excluded; channel 165 is 20 MHz only. RF and switch-port changes need two independent approvers. On an Instant VC every ARM/SSID change applies to all member APs: the scope shown below is recorded with the proposal and re-checked at execution.</div>
+<section class="panel"><h2>New configuration proposal</h2>
+<div class="formgrid">
+<label>Target device<select @bind="targetId"><option value="">Select an AP or switch...</option>@foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind · @d.ManagementIp@(d.IsSimulated?" (sample)":"")</option>}</select></label>
+<label>Action<select @bind="action"><option value="CreateSsid">Create WPA2 SSID + VLAN</option><option value="ChangeBandSteering">ARM band steering</option><option value="ChangeMinTxPower">ARM minimum power bound</option><option value="CreateSwitchVlan">Create CX VLAN</option>
+<option value="ChangeClientMatch">ARM ClientMatch</option>
+<option value="SetChannelPolicy">ARM 20/40 MHz non-DFS channel policy</option>
+<option value="SetSwitchPortVlan">CX port access/trunk VLAN</option>
+<option value="SetSwitchPoe">CX port PoE state</option></select></label>
+@if(Target is { } t){<p class="small">@if(t.IsSimulated){<span class="chip sample">SAMPLE</span> <span>simulated execution</span>}else if(t.IsAccessPoint){<span>Instant scope: <b>@(scope?.ToString()??"unknown - probe the VC first")</b> AP(s) @(members.Count>0?"("+string.Join(", ",members)+")":"")</span>}else{<span>Switch @t.ManagementIp · firmware @(t.Firmware??"unknown")</span>}</p>}
+@if(action=="CreateSsid"){
+<label>Wireless SSID<input @bind="ssid" maxlength="32" placeholder="JCF-LAB-WIFI" /></label>
+<label>VLAN ID (2–4094)<input @bind="vlan" type="number" min="2" max="4094" /></label>
+<label>WLAN password secret reference<input @bind="pskRef" placeholder="JCF_STAFF" /></label>
+<p class="small">Enter a secret reference, not a password. The system does not store Wi-Fi passphrases in proposal records.</p>
+}else if(action=="ChangeBandSteering"){
+<label>Band steering<select @bind="band"><option value="prefer-higher-band">Prefer higher band</option><option value="balance-bands">Balance bands</option><option value="disable">Disable band steering</option></select></label>
+}else if(action=="ChangeMinTxPower"){
+<label>Proposed minimum transmit power (dBm)<input @bind="power" type="number" min="6" max="20" /></label>
+}else if(action=="CreateSwitchVlan"){
+<label>VLAN ID (2–4094)<input @bind="vlan" type="number" min="2" max="4094" /></label>
+<label>VLAN name<input @bind="vlanName" maxlength="32" /></label>
+}
+@if(action=="ChangeClientMatch"){
+<label>ClientMatch state<select @bind="clientMatch"><option value="enabled">Enable</option><option value="disabled">Disable</option></select></label>
+}else if(action=="SetChannelPolicy"){
+<label>Width (MHz)<select @bind="channelWidth"><option value="20">20 MHz</option><option value="40">40 MHz</option></select></label>
+<label>Allowed 5 GHz channels (comma separated)<input @bind="channelPool" placeholder="36,40,44,48,149,153,157,161" /></label>
+}else if(action=="SetSwitchPortVlan"){
+<label>Switch port<input @bind="switchPort" placeholder="1/1/1" /></label><label>Mode<select @bind="portMode"><option value="access">Access</option><option value="trunk">Trunk</option></select></label>
+<label>VLAN<input @bind="vlan" type="number" min="2" max="4094" /></label>
+}else if(action=="SetSwitchPoe"){
+<label>Switch port<input @bind="switchPort" placeholder="1/1/1" /></label><label>PoE<select @bind="poeState"><option value="enabled">Enable</option><option value="disabled">Disable</option></select></label>
+}
+<label>Justification<input @bind="reason" placeholder="Reason for change and maintenance window" /></label>
+</div>
+<div class="actionbar"><button @onclick="Submit">Submit for independent approval</button></div>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+</section>
+<section class="panel"><h2>Configuration execution lifecycle</h2><p>1. Create proposal → 2. Verify device/firmware and actual cluster scope → 3. Independent approval (two reviewers for ARM proposals) → 4. Preflight → 5. Lab-only execution when explicitly enabled → 6. Readback and recovery evidence.</p><p class="muted">Operations and analysis workers cannot approve or execute configuration actions.</p></section>
+@code {
+ private List<Device> devices=new();private string targetId="",action="CreateSsid",ssid="JCF-LAB-WIFI",pskRef="LAB_WIFI",band="prefer-higher-band",vlanName="JCF_TEST",reason="Lab validation only",message="";
+ private int vlan=120,power=9,channelWidth=20;
+ private string clientMatch="enabled",channelPool="36,40,44,48,149,153,157,161",switchPort="1/1/1",portMode="access",poeState="enabled";
+ private int? scope;private List<string> members=new();private Guid? scopeFor;
+ private Device? Target=>Guid.TryParse(targetId,out var id)?devices.FirstOrDefault(d=>d.Id==id):null;
+ protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();devices=await db.Devices.AsNoTracking().Where(d=>d.Enabled).OrderBy(x=>x.Name).ToListAsync();}
+ protected override async Task OnParametersSetAsync()=>await LoadScope();
+ protected override async Task OnAfterRenderAsync(bool first){if(Target?.Id!=scopeFor){await LoadScope();StateHasChanged();}}
+ private async Task LoadScope(){scopeFor=Target?.Id;scope=null;members=new();if(Target is not { IsAccessPoint: true } t)return;
+  await using var db=await DbFactory.CreateDbContextAsync();
+  scope=(await db.TelemetrySnapshots.AsNoTracking().Where(x=>x.DeviceId==t.Id&&x.ApiConnected).OrderByDescending(x=>x.AtUtc).FirstOrDefaultAsync())?.ApCount;
+  members=await db.ClusterMembers.AsNoTracking().Where(m=>m.ConductorDeviceId==t.Id).OrderBy(m=>m.Name).Select(m=>m.Name).Take(40).ToListAsync();}
+ private async Task Submit(){try{
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  if(!JcfRoles.IsOperator(principal))throw new UnauthorizedAccessException("Engineer/operator role required.");
+  if(!Guid.TryParse(targetId,out var id))throw new ArgumentException("Select a device.");
+  if(!Enum.TryParse<ConfigAction>(action,out var a))throw new ArgumentException("Select a valid action.");
+  object body=a switch{
+   ConfigAction.CreateSsid=>new {ssid,vlan,pskSecretRef=pskRef},
+   ConfigAction.ChangeBandSteering=>new {value=band},
+   ConfigAction.ChangeMinTxPower=>new {value=power},
+   ConfigAction.CreateSwitchVlan=>new {vlan,name=vlanName},
+   ConfigAction.ChangeClientMatch=>new {value=clientMatch},
+   ConfigAction.SetChannelPolicy=>new {channelWidthMhz=channelWidth,channels5Ghz=channelPool.Split(',').Select(int.Parse).ToArray()},
+   ConfigAction.SetSwitchPortVlan=>new {port=switchPort,mode=portMode,vlan},
+   ConfigAction.SetSwitchPoe=>new {port=switchPort,state=poeState},
+   _=>throw new InvalidOperationException("Unknown action")};
+  var p=await Changes.SubmitAsync(id,a,JsonSerializer.Serialize(body),principal.Identity?.Name??"unknown",reason);
+  message="Proposal "+p.Id+" submitted. No device settings changed. Open Change approvals to review.";
+ }catch(Exception ex){message=ex.Message;}}
+}

@@ -1,0 +1,32 @@
+@page "/groups"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+<h1>AP groups & location targeting</h1>
+<p class="lede">Administrative groups are organizational metadata and do not override actual Aruba Instant cluster boundaries.</p>
+<section class="panel"><h2>Create a group</h2><div class="formgrid"><label>Group name<input @bind="groupName" maxlength="120" /></label>
+<label>Parent location<select @bind="location"><option value="">None</option>@foreach(var l in locations){<option value="@l.Id.ToString()">@l.Name (@l.Type)</option>}</select></label></div>
+<div class="actionbar"><button @onclick="AddGroup">Create group</button></div>@if(message.Length>0){<p role="status" class="feedback">@message</p>}</section>
+<section class="panel"><h2>Assign devices to a group</h2><div class="formgrid"><label>Group<select @bind="selectedGroup"><option value="">Choose group</option>@foreach(var g in groups){<option value="@g.Id.ToString()">@g.Name</option>}</select></label>
+<label>Device<select @bind="selectedDevice"><option value="">Choose device</option>@foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind</option>}</select></label></div>
+<button class="secondary" @onclick="Assign">Assign device</button></section>
+<section class="panel"><h2>Membership overview</h2><table><thead><tr><th>Group</th><th>Location</th><th>Devices</th><th>Cluster safety</th></tr></thead><tbody>
+@foreach(var g in groups){<tr><td>@g.Name</td><td>@(locations.FirstOrDefault(l=>l.Id==g.LocationId)?.Name??"Not set")</td><td>@members.Count(m=>m.GroupId==g.Id)</td>
+<td>Cluster-wide changes must enumerate the real Instant VC and every affected AP before approval.</td></tr>}</tbody></table></section>
+@code {
+ private List<DeviceGroup> groups=new();private List<Location> locations=new();private List<Device> devices=new();private List<GroupMembership> members=new();
+ private string groupName="",location="",selectedGroup="",selectedDevice="",message="";
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();groups=await db.DeviceGroups.OrderBy(x=>x.Name).ToListAsync();locations=await db.Locations.ToListAsync();devices=await db.Devices.ToListAsync();members=await db.GroupMemberships.ToListAsync();}
+ private async Task AddGroup(){try{var actor=(await Authentication.GetAuthenticationStateAsync()).User;if(!JcfRoles.IsOperator(actor))throw new UnauthorizedAccessException("Operator role required.");
+ if(string.IsNullOrWhiteSpace(groupName))throw new ArgumentException("Group name required.");
+ await using var db=await DbFactory.CreateDbContextAsync();if(await db.DeviceGroups.AnyAsync(x=>x.Name==groupName))throw new InvalidOperationException("Group already exists.");
+ db.DeviceGroups.Add(new DeviceGroup{Name=groupName.Trim(),LocationId=Guid.TryParse(location,out var l)?l:null});db.AuditEvents.Add(new AuditEvent{Actor=actor.Identity?.Name??"unknown",Action="Create group",Target=groupName,Outcome="Recorded (no device write)"});
+ await db.SaveChangesAsync();message="Group created; no AP configuration changed.";await Reload();}catch(Exception ex){message=ex.Message;}}
+ private async Task Assign(){try{var actor=(await Authentication.GetAuthenticationStateAsync()).User;if(!JcfRoles.IsOperator(actor))throw new UnauthorizedAccessException("Operator role required.");
+ if(!Guid.TryParse(selectedGroup,out var group)||!Guid.TryParse(selectedDevice,out var device))throw new ArgumentException("Select a group and device.");
+ await using var db=await DbFactory.CreateDbContextAsync();if(!await db.DeviceGroups.AnyAsync(x=>x.Id==group)||!await db.Devices.AnyAsync(x=>x.Id==device))throw new ArgumentException("Unknown group or device.");
+ if(!await db.GroupMemberships.AnyAsync(x=>x.GroupId==group&&x.DeviceId==device))db.GroupMemberships.Add(new GroupMembership{GroupId=group,DeviceId=device});
+ db.AuditEvents.Add(new AuditEvent{Actor=actor.Identity?.Name??"unknown",Action="Assign administrative group",Target=device.ToString(),Outcome=group.ToString()});
+ await db.SaveChangesAsync();message="Device assigned for inventory targeting; no cluster or AP configuration changed.";await Reload();}catch(Exception ex){message=ex.Message;}}
+}

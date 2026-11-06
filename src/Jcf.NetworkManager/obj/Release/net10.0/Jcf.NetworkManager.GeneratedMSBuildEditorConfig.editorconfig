@@ -1,0 +1,116 @@
+is_global = true
+build_property.TargetFramework = net10.0
+build_property.TargetFramework = net10.0
+build_property.TargetPlatformMinVersion = 
+build_property.TargetPlatformMinVersion = 
+build_property.UsingMicrosoftNETSdkWeb = true
+build_property.UsingMicrosoftNETSdkWeb = true
+build_property.ProjectTypeGuids = 
+build_property.ProjectTypeGuids = 
+build_property.InvariantGlobalization = 
+build_property.InvariantGlobalization = 
+build_property.PlatformNeutralAssembly = 
+build_property.PlatformNeutralAssembly = 
+build_property.EnforceExtendedAnalyzerRules = 
+build_property.EnforceExtendedAnalyzerRules = 
+build_property._SupportedPlatformList = Linux,macOS,Windows
+build_property._SupportedPlatformList = Linux,macOS,Windows
+build_property.TargetFrameworkIdentifier = .NETCoreApp
+build_property.TargetFrameworkVersion = v10.0
+build_property.EntryPointFilePath = 
+build_property.RootNamespace = Jcf.NetworkManager
+build_property.RootNamespace = Jcf.NetworkManager
+build_property.ProjectDir = /home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.RazorLangVersion = 10.0
+build_property.SupportLocalizedComponentNames = 
+build_property.GenerateRazorMetadataSourceChecksumAttributes = 
+build_property.MSBuildProjectDirectory = /home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager
+build_property._RazorSourceGeneratorDebug = 
+build_property.EffectiveAnalysisLevelStyle = 10.0
+build_property.EnableCodeStyleSeverity = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/App.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9BcHAucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Layout/MainLayout.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9MYXlvdXQvTWFpbkxheW91dC5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Alerts.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9BbGVydHMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Audit.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9BdWRpdC5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Capabilities.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9DYXBhYmlsaXRpZXMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/ChangeBoard.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9DaGFuZ2VCb2FyZC5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/ClientExperience.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9DbGllbnRFeHBlcmllbmNlLnJhem9y
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Configuration.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Db25maWd1cmF0aW9uLnJhem9y
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Devices.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9EZXZpY2VzLnJhem9y
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Groups.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Hcm91cHMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Home.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Ib21lLnJhem9y
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Kiosk.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9LaW9zay5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Locations.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Mb2NhdGlvbnMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Operations.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9PcGVyYXRpb25zLnJhem9y
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Recommendations.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9SZWNvbW1lbmRhdGlvbnMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Switches.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Td2l0Y2hlcy5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Topology.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Ub3BvbG9neS5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Users.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9Vc2Vycy5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Pages/Wireless.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9QYWdlcy9XaXJlbGVzcy5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/Routes.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9Sb3V0ZXMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
+[/home/runner/work/ArubaNetworkManager2/ArubaNetworkManager2/src/Jcf.NetworkManager/Components/_Imports.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50cy9fSW1wb3J0cy5yYXpvcg==
+build_metadata.AdditionalFiles.CssScope = 

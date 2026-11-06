@@ -1,0 +1,65 @@
+@page "/recommendations"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AnalysisService Analysis
+@inject AuthenticationStateProvider Authentication
+<h1>Optimization & approvals</h1>
+<p class="lede">Manual analysis and hourly recommendations use monitoring evidence. Neither action alters a device.</p>
+<div class="actionbar"><button disabled="@working" @onclick="Analyze">Analyze Now</button>
+<button class="secondary" disabled="@working" @onclick="ToggleSchedule">@(scheduled?"Pause hourly analysis":"Enable hourly analysis")</button>
+<span class="chip">@(scheduled?"Hourly analysis ON":"Hourly analysis OFF")</span></div>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+@if(working){<p class="banner">Analyzing telemetry — no configuration is being changed.</p>}
+<div class="stats"><div class="stat"><small>Pending review</small><strong>@pending</strong></div>
+<div class="stat"><small>Analysis runs</small><strong>@runs.Count</strong></div>
+<div class="stat"><small>Auto-deployments</small><strong>0</strong></div></div>
+<section class="panel"><h2>Recommendation inbox</h2>
+@if(recommendations.Count==0){<p class="muted">No recommendations yet. Run a device read probe and select Analyze Now.</p>}
+else{<table><thead><tr><th>Finding</th><th>Evidence</th><th>Proposed action</th><th>Status</th><th>Review</th></tr></thead><tbody>
+@foreach(var rec in recommendations){<tr><td><b>@rec.Title</b><br/><small>@rec.Risk risk</small></td><td>@rec.Evidence</td><td>@rec.ProposedSetting</td>
+<td><span class="chip">@rec.State</span><br/><small>@(rec.ReviewedBy is null?"No deployment":"Reviewed by "+rec.ReviewedBy)</small></td>
+<td>@if(rec.State==RecommendationState.Pending && canReview){
+ if(string.Equals(rec.CreatedBy,currentUser,StringComparison.OrdinalIgnoreCase)){<small class="muted">Raised by you; another approver must review</small>}
+ else{<button class="smallbutton" @onclick='()=>Decide(rec.Id,"approve")'>Accept</button> <button class="smallbutton secondary" @onclick='()=>Decide(rec.Id,"defer")'>Defer</button> <button class="smallbutton secondary" @onclick='()=>Decide(rec.Id,"reject")'>Reject</button>}}</td></tr>}
+</tbody></table>}
+</section>
+<section class="panel"><h2>Recent analysis</h2>
+<table><thead><tr><th>UTC</th><th>Trigger</th><th>Devices</th><th>Findings</th></tr></thead><tbody>
+@foreach(var run in runs.Take(15)){<tr><td>@run.AtUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@run.Trigger</td><td>@run.DevicesEvaluated</td><td>@run.Findings</td></tr>}
+</tbody></table>
+</section>
+<div class="banner">Accepting a recommendation records an independent review only; it never changes a device. To act on it, raise a configuration proposal, which has its own approval, payload binding and execution preflight. The hourly scheduler only analyzes telemetry.</div>
+@code {
+ private bool working,scheduled,canReview;private string message="",currentUser="";private int pending;
+ private List<AnalysisRun> runs=new();private List<Recommendation> recommendations=new();
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){var principal=(await Authentication.GetAuthenticationStateAsync()).User;currentUser=principal.Identity?.Name??"";canReview=JcfRoles.IsApprover(principal);
+ await using var db=await DbFactory.CreateDbContextAsync();
+ runs=await db.AnalysisRuns.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(50).ToListAsync();
+ recommendations=await db.Recommendations.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(100).ToListAsync();
+ pending=recommendations.Count(x=>x.State==RecommendationState.Pending);
+ scheduled=(await db.AnalysisSchedules.AsNoTracking().FirstOrDefaultAsync())?.Enabled??false;
+ }
+ private async Task Analyze(){working=true;message="";StateHasChanged();try{
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  if(!JcfRoles.IsOperator(principal))throw new UnauthorizedAccessException("Operator role required.");
+  var run=await Analysis.RunAsync("Manual",principal.Identity?.Name??"unknown");
+  message=$"Analysis completed: {run.DevicesEvaluated} devices, {run.Findings} findings. No device configuration changed.";
+  await Reload();
+ }catch(Exception ex){message=ex.Message;}finally{working=false;}}
+ private async Task Decide(Guid id,string decision){try{
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  JcfRoles.RequireApprover(principal);
+  var rec=await Analysis.DecideAsync(id,decision,principal.Identity?.Name??"");
+  message="Recommendation "+rec.State.ToString().ToLowerInvariant()+". No device configuration changed.";await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+ private async Task ToggleSchedule(){try{
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  if(!JcfRoles.IsOperator(principal))throw new UnauthorizedAccessException("Operator role required.");
+  await using var db=await DbFactory.CreateDbContextAsync();
+  var item=await db.AnalysisSchedules.FirstOrDefaultAsync();if(item is null){item=new AnalysisSchedule();db.AnalysisSchedules.Add(item);}
+  item.Enabled=!item.Enabled;item.EveryMinutes=60;
+  db.AuditEvents.Add(new AuditEvent{Actor=principal.Identity?.Name??"unknown",Action="Hourly analysis toggle",Target="AnalysisSchedule",Outcome=item.Enabled?"Enabled (recommendations only)":"Disabled"});
+  await db.SaveChangesAsync();message="Hourly analysis schedule updated; this does not approve or deploy changes.";await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+}

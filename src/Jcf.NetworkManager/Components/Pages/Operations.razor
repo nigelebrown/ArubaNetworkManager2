@@ -1,0 +1,62 @@
+@page "/operations"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject EnterpriseOperationsService OperationsService
+@inject AuthenticationStateProvider Authentication
+@inject IncidentService Incidents
+<h1>Operations, compliance and telemetry</h1>
+<p class="lede">Policy validation, RF data quality, port health, incidents and historical evidence. Measurements without a certified source are not treated as zero.</p>
+<div class="stats">
+ <div class="stat"><small>Policy findings</small><strong>@findings.Count(x=>x.State=="Open")</strong></div>
+ <div class="stat"><small>Open incidents</small><strong>@incidents.Count(x=>x.Status=="Open")</strong></div>
+ <div class="stat"><small>RF observations</small><strong>@radios.Count</strong></div>
+ <div class="stat"><small>Port observations</small><strong>@ports.Count</strong></div>
+</div>
+<section class="panel"><h2>RF policy compliance</h2>
+<p>JCF approved widths: 20 or 40 MHz only. 5 GHz compatibility: exclude DFS channels 52–64 and 100–144. This page does not change device settings.</p>
+<button @onclick="Evaluate" disabled="@busy">Evaluate observed configuration</button>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+<table><thead><tr><th>Device</th><th>Rule</th><th>Severity</th><th>Evidence</th><th>State</th></tr></thead><tbody>
+@foreach(var finding in findings){<tr><td>@nameMap.GetValueOrDefault(finding.DeviceId,"Unknown")</td><td>@finding.Rule</td><td>@finding.Severity</td><td>@finding.Evidence</td><td>@finding.State</td></tr>}
+</tbody></table></section>
+<section class="panel"><h2>Radio observations</h2><table><thead><tr><th>Device</th><th>Time UTC</th><th>Channel</th><th>Width</th><th>Utilization</th><th>Noise floor</th><th>Quality</th></tr></thead><tbody>
+@foreach(var r in radios){<tr><td>@nameMap.GetValueOrDefault(r.DeviceId,"Unknown")</td><td>@r.AtUtc.ToString("g")</td><td>@(r.Channel?.ToString()??"Unknown")</td><td>@(r.WidthMhz?.ToString()??"Unknown")</td><td>@(r.UtilizationPct?.ToString("0.0")??"Unknown")</td><td>@(r.NoiseFloorDbm?.ToString("0.0")??"Unknown")</td><td>@r.Quality</td></tr>}
+</tbody></table></section>
+<section class="panel"><h2>Switch port observations</h2><table><thead><tr><th>Switch</th><th>Port</th><th>Link</th><th>Errors</th><th>PoE</th><th>Source</th></tr></thead><tbody>
+@foreach(var p in ports){<tr><td>@nameMap.GetValueOrDefault(p.DeviceId,"Unknown")</td><td>@p.Port</td><td>@p.LinkState</td><td>@(p.RxErrors?.ToString()??"Unknown")</td><td>@(p.PoeWatts?.ToString("0.0")??"Unknown")</td><td>@p.Source</td></tr>}
+</tbody></table></section>
+<section class="panel"><h2>Incidents</h2>
+@if(isOperator){<div class="formgrid">
+<label>Title<input @bind="incTitle" maxlength="120" placeholder="Station Wi-Fi slow / AP offline" /></label>
+<label>Severity<select @bind="incSeverity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></label>
+<label>Device (optional)<select @bind="incDevice"><option value="">None</option>@foreach(var d in nameMap){<option value="@d.Key">@d.Value</option>}</select></label>
+<label>Description<input @bind="incDescription" maxlength="1200" /></label></div>
+<div class="actionbar"><button @onclick="OpenIncident">Open incident</button></div>}
+<table><thead><tr><th>Opened (UTC)</th><th>Title</th><th>Device</th><th>Severity</th><th>Assigned</th><th>Status</th>@if(isOperator){<th></th>}</tr></thead><tbody>
+@foreach(var i in incidents){<tr><td>@i.OpenedUtc.ToString("g")</td><td>@i.Title<br/><small>@i.Description</small></td><td>@(i.DeviceId is Guid did?nameMap.GetValueOrDefault(did,"Removed"):"—")</td><td>@i.Severity</td><td>@(i.Owner??"Unassigned")</td><td>@i.Status</td>
+@if(isOperator){<td class="actions">@if(i.Status!="Resolved"){
+ @if(i.Status=="Open"){<button class="smallbutton secondary" @onclick='()=>Move(i,"Acknowledged")'>Acknowledge (take)</button>}
+ @if(i.Status is "Open" or "Acknowledged"){<button class="smallbutton secondary" @onclick='()=>Move(i,"Investigating")'>Investigating</button>}
+ <button class="smallbutton" @onclick='()=>Move(i,"Resolved")'>Resolve</button>}</td>}</tr>}
+</tbody></table></section>
+@code {
+ private List<ComplianceFinding> findings=new();private List<OperationsIncident> incidents=new();private List<RadioObservation> radios=new();private List<PortObservation> ports=new();private Dictionary<Guid,string> nameMap=new();
+ private bool busy,isOperator;private string message="",incTitle="",incSeverity="Medium",incDevice="",incDescription="";
+ protected override async Task OnInitializedAsync(){isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);await Reload();}
+ private async Task OpenIncident(){try{var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+  await Incidents.OpenAsync(Guid.TryParse(incDevice,out var d)?d:null,null,incTitle,incDescription,incSeverity,user.Identity?.Name??"unknown");
+  message="Incident opened.";incTitle="";incDescription="";await Reload();}catch(Exception ex){message=ex.Message;}}
+ private async Task Move(OperationsIncident i,string state){try{var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+  await Incidents.TransitionAsync(i.Id,state,state=="Acknowledged"?user.Identity?.Name:null,user.Identity?.Name??"unknown");message="Incident "+state.ToLowerInvariant()+".";await Reload();}
+  catch(Exception ex){message=ex.Message;}}
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();
+ findings=await db.ComplianceFindings.AsNoTracking().OrderByDescending(x=>x.DetectedUtc).Take(150).ToListAsync();
+ incidents=await db.OperationsIncidents.AsNoTracking().OrderByDescending(x=>x.OpenedUtc).Take(100).ToListAsync();
+ radios=await db.RadioObservations.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(150).ToListAsync();
+ ports=await db.PortObservations.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(150).ToListAsync();
+ nameMap=await db.Devices.AsNoTracking().ToDictionaryAsync(x=>x.Id,x=>x.Name);}
+ private async Task Evaluate(){try{busy=true;var user=(await Authentication.GetAuthenticationStateAsync()).User;
+ if(!JcfRoles.IsOperator(user))throw new UnauthorizedAccessException("Operator role required.");
+ var count=await OperationsService.EvaluateComplianceAsync(user.Identity?.Name??"unknown");message=$"Compliance inspection finished: {count} active findings; zero configuration writes.";await Reload();}
+ catch(Exception ex){message=ex.Message;}finally{busy=false;}}
+}

@@ -1,0 +1,202 @@
+@page "/devices"
+@attribute [Authorize]
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject DeviceService DevicesService
+@inject CredentialVault Vault
+@inject AuthenticationStateProvider Authentication
+@inject IConfiguration Config
+<h1>Devices, credentials & API discovery</h1>
+<p class="lede">Onboard Aruba Instant APs (REST 4343) and AOS-CX switches (REST 443). Monitoring is read-only; configuration changes only happen through approved proposals.</p>
+@if(sampleCount>0){<div class="banner">@sampleCount sample device(s) marked <span class="chip sample">SAMPLE</span> are served by the built-in simulator and never contacted. Every device you register here is real and is polled over the network@(isAdmin?"; remove the samples under Operator accounts > Sample data when you go live":"").</div>}
+<div class="banner @(writePolicy.Enabled?"warn":"")">Device configuration writes: <b>@(writePolicy.Enabled?"ENABLED for "+WriteTargets():"disabled")</b>@(writePolicy.Enabled && writePolicy.AllowClusterWide?" · cluster-wide Instant changes allowed":"").</div>
+@if(!string.IsNullOrEmpty(message)){<p class="feedback @(messageIsError?"error":"")" role="status">@message</p>}
+
+@if(isOperator){
+<section class="panel"><h2>Add a device</h2>
+<div class="formgrid">
+ <label>Display name<input @bind="name" placeholder="HQ-FLOOR2-AP505-01" maxlength="120" /></label>
+ <label>Equipment type<select @bind="kind"><option value="Ap505">Aruba AP-505 (Instant)</option><option value="Ap535">Aruba AP-535 (Instant)</option><option value="Cx6100">Aruba CX 6100</option><option value="Cx6200">Aruba CX 6200</option></select></label>
+ <label>Management IP<input @bind="ip" placeholder="192.0.2.71" /></label>
+ <label>Instant VC / cluster name (optional)<input @bind="cluster" placeholder="HQ-VC" maxlength="60" /></label>
+ <label>Location<select @bind="locationString"><option value="">Unassigned</option>@foreach(var loc in locations){<option value="@loc.Id">@loc.Name (@loc.Type)</option>}</select></label>
+ <label>Credential profile<input @bind="secretRef" list="profiles" placeholder="HQ_INSTANT" maxlength="40" /></label>
+ <datalist id="profiles">@foreach(var c in credentials){<option value="@c.Reference" />}</datalist>
+ <label>Device username (optional)<input @bind="username" autocomplete="off" maxlength="128" /></label>
+ <label>Device password (optional)<input type="password" @bind="password" autocomplete="new-password" maxlength="256" /></label>
+</div>
+<p class="muted">A credential profile can be shared (for example every AP in one Instant cluster). Username/password entered here are encrypted into that profile and never displayed again; leave them blank to reuse an existing profile. For an Instant cluster register the virtual-controller address.</p>
+<div class="actionbar"><button disabled="@working" @onclick="()=>RegisterAsync(false)">Register device</button>
+<button class="secondary" disabled="@working" @onclick="()=>RegisterAsync(true)">Register and test connection</button></div>
+</section>}
+
+<section class="panel"><h2>Inventory (@devices.Count)</h2>
+@if(devices.Count==0){<p class="muted">No registered equipment.</p>}
+else {<table><thead><tr><th>Name / IP</th><th>Model</th><th>Firmware</th><th>Health</th><th>Credentials</th><th>TLS</th>@if(isOperator){<th>Actions</th>}</tr></thead><tbody>
+@foreach(var d in devices){
+<tr class="@(d.Enabled?"":"dimmed")"><td><b>@d.Name</b> @if(d.IsSimulated){<span class="chip sample">SAMPLE</span>}<br/><small>@d.ManagementIp @(d.ClusterName is null?"":" · VC "+d.ClusterName)</small></td>
+<td>@d.Kind</td><td>@(d.Firmware??"Unknown")</td>
+<td><span class="chip @StatusClass(d.LastStatus)">@d.LastStatus</span>@if(d.LastSeenUtc is DateTime seen){<br/><small>seen @seen.ToString("yyyy-MM-dd HH:mm") UTC</small>}@if(!string.IsNullOrEmpty(d.LastIssue)){<br/><small class="error">@d.LastIssue</small>}</td>
+<td>@if(d.IsSimulated){<small>simulated</small>}else{<span>@d.SecretRef</span><br/><small class="@(CredentialSource(d.SecretRef).StartsWith("MISSING")?"error":"muted")">@CredentialSource(d.SecretRef)</small>}</td>
+<td>@if(d.IsSimulated){<small>—</small>}else if(d.TlsCertSha256 is not null){<span class="chip ok">Pinned</span><br/><small>@d.TlsCertSha256[..12]…</small>}else{<small>System trust</small>}</td>
+@if(isOperator){<td class="actions">
+ <button class="smallbutton" disabled="@(working||!d.Enabled)" @onclick="()=>ProbeAsync(d.Id)">Test / read</button>
+ @if(!d.IsSimulated){<button class="smallbutton secondary" disabled="@working" @onclick="()=>CaptureAsync(d)">Certificate</button>}
+ <button class="smallbutton secondary" @onclick="()=>StartEdit(d)">Edit</button>
+ <button class="smallbutton secondary" @onclick="()=>ToggleAsync(d)">@(d.Enabled?"Disable":"Enable")</button>
+ @if(confirmRemove==d.Id){<button class="smallbutton danger" @onclick="()=>RemoveAsync(d)">Confirm remove</button>}
+ else{<button class="smallbutton secondary" @onclick="()=>confirmRemove=d.Id">Remove</button>}
+</td>}</tr>}
+</tbody></table>}
+@if(working){<div class="banner">Contacting the device. Read-only; no configuration is changed.</div>}
+@if(lastProbe is not null){<div class="results"><h3>Most recent API read: @lastProbeName</h3><p>Connection: @(lastProbe.Connected?"Authenticated":"Not authenticated") · Firmware: @(lastProbe.Firmware??"Unknown") · APs: @(lastProbe.ApCount?.ToString()??"—") · Clients: @(lastProbe.ClientCount?.ToString()??"—") · VLANs: @(lastProbe.VlanCount?.ToString()??"—") · Ports: @(lastProbe.PortCount?.ToString()??"—")</p>
+@foreach(var check in lastProbe.ApiChecks){<div class="checkline">@check</div>}
+@if(lastProbe.Issue is not null){<p class="error">@lastProbe.Issue</p>}</div>}
+</section>
+
+@if(certificate is not null && certificateDevice is not null){
+<section class="panel"><h2>Management certificate: @certificateDevice.Name</h2>
+<table><tbody>
+<tr><th>SHA-256 fingerprint</th><td><code>@Pretty(certificate.Sha256)</code></td></tr>
+<tr><th>Subject / issuer</th><td>@certificate.Subject<br/><small>@certificate.Issuer</small></td></tr>
+<tr><th>Valid (UTC)</th><td>@certificate.NotBeforeUtc.ToString("yyyy-MM-dd") to @certificate.NotAfterUtc.ToString("yyyy-MM-dd")@if(certificate.NotAfterUtc<DateTime.UtcNow){<span class="chip bad">EXPIRED</span>}</td></tr>
+<tr><th>Trusted by this server</th><td>@(certificate.TrustedByServer?"Yes (chain and name valid)":"No - "+certificate.ChainStatus)</td></tr>
+<tr><th>Current pin</th><td>@(certificate.MatchesCurrentPin?"This certificate is pinned":certificateDevice.TlsCertSha256 is null?"None (system trust store)":"A DIFFERENT certificate is pinned")</td></tr>
+</tbody></table>
+<p class="muted">Before pinning, confirm the fingerprint on the device itself (Instant: <code>show web-server profile</code> or the browser certificate view; AOS-CX: <code>show crypto pki certificate</code>). Pinning makes this the only certificate the platform accepts for @certificateDevice.ManagementIp.</p>
+<div class="actionbar">@if(!certificate.MatchesCurrentPin){<button @onclick="PinAsync">Pin this certificate</button>}
+@if(certificateDevice.TlsCertSha256 is not null){<button class="secondary" @onclick="ClearPinAsync">Clear pin (use system trust)</button>}
+<button class="secondary" @onclick="()=>{certificate=null;certificateDevice=null;}">Close</button></div>
+</section>}
+
+@if(editing is not null){
+<section class="panel"><h2>Edit @editing.Name</h2>
+<div class="formgrid">
+ <label>Display name<input @bind="editName" maxlength="120" /></label>
+ <label>Instant VC / cluster name<input @bind="editCluster" maxlength="60" /></label>
+ @if(!editing.IsSimulated){<label>Credential profile<input @bind="editSecretRef" list="profiles" maxlength="40" /></label>}
+</div>
+<p class="muted">Management IP and model are identity: to change them, remove the device and register it again. Location is changed under Topology & placement (with history).</p>
+<div class="actionbar"><button @onclick="SaveEditAsync">Save</button><button class="secondary" @onclick="()=>editing=null">Cancel</button></div>
+</section>}
+
+<section class="panel"><h2>Credential profiles</h2>
+<table><thead><tr><th>Profile</th><th>Source</th><th>Devices</th><th>Last changed</th>@if(isOperator){<th></th>}</tr></thead><tbody>
+@foreach(var c in credentials){<tr><td><b>@c.Reference</b>@if(c.Description is not null){<br/><small>@c.Description</small>}</td>
+<td><span class="chip @(c.Source.StartsWith("MISSING")?"bad":"")">@c.Source</span></td><td>@c.DevicesUsing</td>
+<td>@(c.UpdatedUtc?.ToString("yyyy-MM-dd HH:mm")??"—") @(c.UpdatedBy is null?"":"by "+c.UpdatedBy)</td>
+@if(isOperator){<td>@if(c.UpdatedUtc is not null && c.DevicesUsing==0){<button class="smallbutton secondary" @onclick="()=>DeleteCredentialAsync(c.Reference)">Delete</button>}
+<button class="smallbutton secondary" @onclick="()=>credRef=c.Reference">@(c.UpdatedUtc is null?"Enter":"Rotate")</button></td>}</tr>}
+@if(credentials.Count==0){<tr><td colspan="5" class="muted">No profiles yet.</td></tr>}
+</tbody></table>
+@if(isOperator){
+<h3>Set or rotate a profile</h3>
+<div class="formgrid"><label>Profile name<input @bind="credRef" maxlength="40" placeholder="HQ_INSTANT" /></label>
+<label>Username<input @bind="credUser" autocomplete="off" maxlength="128" /></label>
+<label>Password<input type="password" @bind="credPass" autocomplete="new-password" maxlength="256" /></label>
+<label>Description (optional)<input @bind="credDescription" maxlength="200" /></label></div>
+<div class="actionbar"><button @onclick="SaveCredentialAsync">Save encrypted profile</button></div>}
+<p class="muted">Profiles are encrypted with the server's Data Protection key ring. Back that key directory up with the database. Profiles found only in the service environment (<code>JCF_DEVICE_&lt;PROFILE&gt;_USER/_PASS</code>) are listed as such.</p>
+</section>
+
+@if(isOperator){
+<section class="panel"><h2>Bulk import</h2>
+<p class="muted">One device per line: <code>name,model,managementIp,credentialProfile[,location[,cluster]]</code>. Models: AP-505, AP-535, CX6100, CX6200. Locations must already exist (matched by name). Enter each profile's credentials above.</p>
+<textarea rows="6" @bind="csv" placeholder="name,model,ip,profile,location,cluster&#10;Example-AP-01,AP-505,192.0.2.71,EXAMPLE_AP,Example Lab,EXAMPLE-VC&#10;Example-CX-01,CX6200,198.51.100.21,EXAMPLE_SW,Example Lab"></textarea>
+<div class="actionbar"><button disabled="@working" @onclick="ImportAsync">Import devices</button></div>
+@if(importRows.Count>0){<table><thead><tr><th>Line</th><th>Name</th><th>Result</th></tr></thead><tbody>
+@foreach(var r in importRows){<tr><td>@r.Line</td><td>@r.Name</td><td class="@(r.Success?"":"error")">@r.Outcome</td></tr>}</tbody></table>}
+</section>}
+
+@code {
+ private string name="",ip="",secretRef="",kind="Ap505",locationString="",cluster="",username="",password="",message="";
+ private bool working,messageIsError,isOperator,isAdmin;
+ private int sampleCount;
+ private DeviceWritePolicy writePolicy=new(false,[],[],false);
+ private List<Device> devices=new(); private List<Location> locations=new(); private List<CredentialVault.CredentialView> credentials=new();
+ private ProbeResult? lastProbe; private string lastProbeName="";
+ private DeviceCertificateInfo? certificate; private Device? certificateDevice;
+ private Device? editing; private string editName="",editCluster="",editSecretRef="";
+ private Guid? confirmRemove;
+ private string credRef="",credUser="",credPass="",credDescription="",csv="";
+ private List<DeviceService.ImportRow> importRows=new();
+
+ protected override async Task OnInitializedAsync(){
+  var user=(await Authentication.GetAuthenticationStateAsync()).User;
+  isOperator=JcfRoles.IsOperator(user); isAdmin=JcfRoles.IsAdmin(user);
+  writePolicy=DeviceWritePolicy.From(Config);
+  await Reload();
+ }
+ private async Task Reload(){
+  await using var db=await DbFactory.CreateDbContextAsync();
+  devices=await db.Devices.AsNoTracking().OrderBy(x=>x.IsSimulated).ThenBy(x=>x.Name).ToListAsync();
+  locations=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  sampleCount=devices.Count(d=>d.IsSimulated);
+  credentials=await Vault.ListAsync();
+ }
+ private string WriteTargets()=>string.Join(", ",writePolicy.AllowedCidrs.Concat(writePolicy.AllowedIps).DefaultIfEmpty("no targets (nothing can be written)"));
+ private string CredentialSource(string reference)=>credentials.FirstOrDefault(c=>c.Reference.Equals(reference,StringComparison.OrdinalIgnoreCase))?.Source??"MISSING - enter credentials";
+ private static string StatusClass(string status)=>status switch{"Healthy"=>"ok","Offline"=>"bad","Degraded"=>"warn",_=>""};
+ private static string Pretty(string hex)=>string.Join(":",Enumerable.Range(0,hex.Length/2).Select(i=>hex.Substring(i*2,2)));
+ private async Task<string> Actor(){var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);return user.Identity?.Name??"unknown";}
+ private void Ok(string text){message=text;messageIsError=false;}
+ private void Fail(Exception ex){message=ex.Message;messageIsError=true;}
+
+ private async Task RegisterAsync(bool test){working=true;try{
+  var actor=await Actor();
+  if(!string.IsNullOrEmpty(username)||!string.IsNullOrEmpty(password)) await Vault.SetAsync(secretRef,username,password,null,actor);
+  var loc=Guid.TryParse(locationString,out var id)? id : (Guid?)null;
+  var d=await DevicesService.RegisterAsync(name,Enum.Parse<DeviceKind>(kind),ip,secretRef,loc,actor,default,cluster);
+  Ok($"{d.Name} registered."+(test?"":" Use Test / read to verify API access."));
+  name="";ip="";username="";password="";cluster="";
+  await Reload();
+  if(test){working=false;await ProbeAsync(d.Id);}
+ }catch(Exception ex){Fail(ex);}finally{password="";working=false;}}
+
+ private async Task ProbeAsync(Guid id){working=true;lastProbe=null;StateHasChanged();try{
+  var actor=await Actor();
+  lastProbeName=devices.FirstOrDefault(x=>x.Id==id)?.Name??"";
+  lastProbe=await DevicesService.ProbeAsync(id,actor);
+  if(lastProbe.Connected) Ok(lastProbe.Issue is null?"API session authenticated; read results stored.":"Authenticated, but some reads failed.");
+  else {message="Device API not verified: "+(lastProbe.Issue??"no detail");messageIsError=true;}
+  await Reload();
+ }catch(Exception ex){Fail(ex);}finally{working=false;}}
+
+ private async Task CaptureAsync(Device d){working=true;certificate=null;StateHasChanged();try{
+  await Actor();
+  certificate=await DevicesService.CaptureCertificateAsync(d.Id);certificateDevice=d;
+  Ok("Certificate read from "+d.ManagementIp+":"+certificate.Port+". Verify the fingerprint before pinning.");
+ }catch(Exception ex){Fail(ex);}finally{working=false;}}
+ private async Task PinAsync(){try{
+  await DevicesService.PinCertificateAsync(certificateDevice!.Id,certificate!.Sha256,await Actor());
+  Ok("Certificate pinned for "+certificateDevice.Name+". Run Test / read to verify.");certificate=null;certificateDevice=null;await Reload();
+ }catch(Exception ex){Fail(ex);}}
+ private async Task ClearPinAsync(){try{
+  await DevicesService.PinCertificateAsync(certificateDevice!.Id,null,await Actor());
+  Ok("Pin cleared; the operating-system trust store now validates "+certificateDevice.Name+".");certificate=null;certificateDevice=null;await Reload();
+ }catch(Exception ex){Fail(ex);}}
+
+ private void StartEdit(Device d){editing=d;editName=d.Name;editCluster=d.ClusterName??"";editSecretRef=d.SecretRef;}
+ private async Task SaveEditAsync(){try{
+  await DevicesService.UpdateAsync(editing!.Id,editName,editing.IsSimulated?editing.SecretRef:editSecretRef,editCluster,await Actor());
+  Ok("Device updated.");editing=null;await Reload();
+ }catch(Exception ex){Fail(ex);}}
+ private async Task ToggleAsync(Device d){try{
+  await DevicesService.SetEnabledAsync(d.Id,!d.Enabled,await Actor());Ok(d.Name+(d.Enabled?" disabled: no polling or changes.":" enabled."));await Reload();
+ }catch(Exception ex){Fail(ex);}}
+ private async Task RemoveAsync(Device d){try{
+  await DevicesService.RemoveAsync(d.Id,await Actor());confirmRemove=null;Ok(d.Name+" removed. Audit and change history are kept.");await Reload();
+ }catch(Exception ex){Fail(ex);}}
+
+ private async Task SaveCredentialAsync(){try{
+  await Vault.SetAsync(credRef,credUser,credPass,credDescription,await Actor());
+  Ok("Credential profile "+credRef.ToUpperInvariant()+" saved (encrypted).");credUser="";credDescription="";await Reload();
+ }catch(Exception ex){Fail(ex);}finally{credPass="";}}
+ private async Task DeleteCredentialAsync(string reference){try{
+  await Vault.DeleteAsync(reference,await Actor());Ok("Profile "+reference+" deleted.");await Reload();
+ }catch(Exception ex){Fail(ex);}}
+ private async Task ImportAsync(){working=true;try{
+  importRows=await DevicesService.ImportCsvAsync(csv,await Actor());
+  Ok($"{importRows.Count(r=>r.Success)} registered, {importRows.Count(r=>!r.Success)} rejected.");await Reload();
+ }catch(Exception ex){Fail(ex);}finally{working=false;}}
+}

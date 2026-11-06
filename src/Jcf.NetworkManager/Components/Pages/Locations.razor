@@ -1,0 +1,34 @@
+@page "/locations"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+<h1>Locations & administrative groups</h1>
+<p class="lede">Organize by HQ, Area/Branch, Division, station, building or zone. Logical groups never override Aruba Instant cluster boundaries.</p>
+<section class="panel"><h2>Add location</h2>
+<div class="fields">
+ <label>Location name<input @bind="name" placeholder="Commissioner's Office" /></label>
+ <label>Category<select @bind="type">@foreach(var t in new[]{"HQ","Area","Branch","Division","Station","Building","Floor","Zone"}){<option value="@t">@t</option>}</select></label>
+ <label>Parent<select @bind="parent"><option value="">Top level</option>@foreach(var loc in locations){<option value="@loc.Id">@loc.Name (@loc.Type)</option>}</select></label>
+</div><button @onclick="Create">Add location</button>@if(message.Length>0){<p class="feedback">@message</p>}
+</section>
+<section class="panel"><h2>Location registry</h2><table><thead><tr><th>Location</th><th>Type</th><th>Parent</th><th>Registered devices</th></tr></thead><tbody>
+@foreach(var loc in locations){<tr><td>@loc.Name</td><td>@loc.Type</td><td>@(locations.FirstOrDefault(x=>x.Id==loc.ParentId)?.Name??"—")</td><td>@devices.Count(x=>x.LocationId==loc.Id)</td></tr>}
+</tbody></table></section>
+<div class="banner">AP groups are administrative metadata. Cluster-scoped SSID/ARM changes must display every member affected before approval.</div>
+@code {
+ private string name="",type="Station",parent="",message="";
+ private List<Location> locations=new();private List<Device> devices=new();
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();locations=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();devices=await db.Devices.AsNoTracking().ToListAsync();}
+ private async Task Create(){try{
+  var user=(await Authentication.GetAuthenticationStateAsync()).User;
+  if(!JcfRoles.IsOperator(user))throw new UnauthorizedAccessException("Operator role required.");
+  if(string.IsNullOrWhiteSpace(name)||name.Length>120) throw new InvalidOperationException("Valid name required.");
+  await using var db=await DbFactory.CreateDbContextAsync();
+  var id=Guid.TryParse(parent,out var p)?p:(Guid?)null;
+  if(id.HasValue&&!await db.Locations.AnyAsync(l=>l.Id==id))throw new InvalidOperationException("Parent not found.");
+  db.Locations.Add(new Location{Name=name.Trim(),Type=type,ParentId=id});
+  db.AuditEvents.Add(new AuditEvent{Actor=user.Identity?.Name??"unknown",Action="Create location",Target=name,Outcome="Registered"});
+  await db.SaveChangesAsync();message="Location saved.";name="";await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+}

@@ -1,0 +1,31 @@
+@page "/kiosk"
+@attribute [Authorize]
+@implements IDisposable
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+<h1>Executive Operations Display</h1>
+<p class="lede">Automatically rotates every 10 seconds with no operator interaction. Monitoring and recommendation display only.</p>
+<div class="stats"><div class="stat"><small>Scene</small><strong>@(scene+1) / 3</strong></div><div class="stat"><small>Auto-refresh</small><strong>10 sec</strong></div><div class="stat"><small>Pending approval</small><strong>@pending</strong></div></div>
+<section class="panel">
+@if(scene==0){<h2>Network equipment</h2><div class="stats"><div class="stat"><small>Registered APs/switches</small><strong>@deviceTotal</strong></div><div class="stat"><small>Healthy last status</small><strong>@healthy</strong></div><div class="stat"><small>Degraded or unknown</small><strong>@(deviceTotal-healthy)</strong></div></div>}
+else if(scene==1){<h2>Wireless client awareness</h2><div class="stats"><div class="stat"><small>Known associated clients</small><strong>@knownClients</strong></div><div class="stat"><small>APs without verified client count</small><strong>@unknownCounts</strong></div></div><p>Unknown client measurements remain unknown; absence of a test station does not prove wireless service quality.</p>}
+else {<h2>Changes, recommendations and incidents</h2><div class="stats"><div class="stat"><small>Pending recommendations</small><strong>@pending</strong></div><div class="stat"><small>Open critical recovery alerts</small><strong>@criticalAlerts</strong></div></div><p>Analysis is advisory; no recommended configuration is applied without independent authorization.</p>}
+</section>
+@code {
+ private PeriodicTimer? timer;private CancellationTokenSource? cancel;
+ private int scene,deviceTotal,healthy,knownClients,unknownCounts,pending,criticalAlerts;
+ protected override async Task OnInitializedAsync(){await Load();cancel=new CancellationTokenSource();timer=new PeriodicTimer(TimeSpan.FromSeconds(10));_=Rotate(cancel.Token);}
+ private async Task Rotate(CancellationToken ct){try{while(timer is not null&&await timer.WaitForNextTickAsync(ct)){
+   await InvokeAsync(async()=>{scene=(scene+1)%3;await Load();StateHasChanged();});
+ }}catch(OperationCanceledException) {}}
+ private async Task Load(){await using var db=await DbFactory.CreateDbContextAsync();var devices=await db.Devices.AsNoTracking().ToListAsync();
+ deviceTotal=devices.Count;healthy=devices.Count(x=>x.LastStatus=="Healthy");
+ var ids=devices.Where(x=>x.IsAccessPoint).Select(x=>x.Id).ToHashSet();
+ // Latest snapshot per AP from the last hour only: never load the whole telemetry table into memory.
+ var since=DateTime.UtcNow.AddHours(-1);
+ var snapshots=await db.TelemetrySnapshots.AsNoTracking().Where(x=>ids.Contains(x.DeviceId)&&x.AtUtc>=since).GroupBy(x=>x.DeviceId).Select(g=>g.OrderByDescending(x=>x.AtUtc).First()).ToListAsync();
+ knownClients=snapshots.Sum(x=>x.ClientCount??0);unknownCounts=ids.Count(x=>!snapshots.Any(y=>y.DeviceId==x&&y.ClientCount.HasValue));
+ pending=await db.Recommendations.CountAsync(x=>x.State==RecommendationState.Pending)+await db.ConfigProposals.CountAsync(x=>x.State==ConfigProposalState.PendingApproval||x.State==ConfigProposalState.PendingSecondApproval);
+ criticalAlerts=await db.NetworkAlerts.CountAsync(x=>x.State!="Resolved"&&x.Severity=="Critical");
+ }
+ public void Dispose(){cancel?.Cancel();cancel?.Dispose();timer?.Dispose();}
+}

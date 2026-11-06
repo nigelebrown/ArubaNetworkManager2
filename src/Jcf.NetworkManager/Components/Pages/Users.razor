@@ -1,0 +1,51 @@
+@page "/admin/users"
+@attribute [Authorize(Roles="PlatformAdmin")]
+@inject IServiceProvider Services
+@inject AuthenticationStateProvider Authentication
+@inject SampleDataService SampleData
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+<h1>Administration</h1>
+<div class="panel"><h2>Sample data</h2>
+<p>@(sampleCount>0?$"{sampleCount} simulated sample device(s) are loaded (192.0.2.0/24, never contacted).":"No sample devices are loaded.") Removing them deletes only simulated equipment and its observations; real devices, proposals and the audit trail are untouched.</p>
+<div class="actionbar">@if(sampleCount>0){@if(confirmSample){<button class="danger" @onclick="RemoveSample">Confirm: remove all sample devices</button><button class="secondary" @onclick="()=>confirmSample=false">Cancel</button>}else{<button class="secondary" @onclick="()=>confirmSample=true">Remove sample data</button>}}
+else{<button class="secondary" @onclick="LoadSample">Load sample data</button>}</div>
+@if(sampleMessage.Length>0){<p class="feedback" role="status">@sampleMessage</p>}</div>
+<h2>Local operator accounts</h2>
+<p class="lede">Password-hashed local accounts, lockout and independent change-approval roles. No default passwords are shipped.</p>
+@if(accounts is null){<div class="banner">Local account administration is unavailable in demo mode. Use the persona switcher instead.</div>}
+else{
+<div class="panel"><h2>Add an operator account</h2>
+<div class="formgrid">
+<label>Username<input @bind="username" autocomplete="off" /></label>
+<label>Display name<input @bind="display" /></label>
+<label>Initial password<input type="password" @bind="password" autocomplete="new-password" /></label>
+<label>Role<select @bind="role">@foreach(var r in JcfRoles.All){<option value="@r">@r</option>}</select></label></div>
+<p class="muted">Use a unique passphrase of at least 14 characters containing uppercase, lowercase, a number and a symbol. The password is not written to audit logs.</p>
+<button @onclick="Create">Create account</button>
+@if(message.Length>0){<p class="feedback" role="status">@message</p>}</div>
+<div class="panel"><h2>Accounts</h2><table><thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>Status</th><th>Created (UTC)</th><th>Actions</th></tr></thead><tbody>
+@foreach(var user in users){<tr><td>@user.UserName</td><td>@user.DisplayName</td>
+<td><select value="@user.Role" @onchange='e=>SetRole(user.Id,e.Value?.ToString()??"")'>@foreach(var r in JcfRoles.All){<option value="@r" selected="@(r==user.Role)">@r</option>}</select></td>
+<td><span class="chip">@(user.IsDisabled?"Disabled":user.IsLockedOut?"Locked out":"Active")</span></td><td>@user.CreatedUtc.ToString("g")</td>
+<td>@if(user.IsDisabled){<button class="smallbutton" @onclick='()=>Run(user.Id,a=>accounts.SetDisabledAsync(user.Id,false,a),"Account enabled.")'>Enable</button>}
+else{<button class="smallbutton secondary" @onclick='()=>Run(user.Id,a=>accounts.SetDisabledAsync(user.Id,true,a),"Account disabled; sessions revoked within one minute.")'>Disable</button>}
+@if(user.IsLockedOut){<button class="smallbutton" @onclick='()=>Run(user.Id,a=>accounts.UnlockAsync(user.Id,a),"Lockout cleared.")'>Unlock</button>}</td></tr>}
+</tbody></table></div>}
+@code {
+ private OperatorAccountService? accounts;
+ private List<OperatorAccountService.AccountView> users=new();private string username="",display="",password="",role=JcfRoles.Viewer,message="";
+ private int sampleCount;private bool confirmSample;private string sampleMessage="";
+ protected override async Task OnInitializedAsync(){accounts=Services.GetService<OperatorAccountService>();if(accounts is not null)await Reload();await CountSample();}
+ private async Task CountSample(){await using var db=await DbFactory.CreateDbContextAsync();sampleCount=await db.Devices.CountAsync(d=>d.IsSimulated);}
+ private async Task RemoveSample(){try{var n=await SampleData.RemoveAsync(await Actor());sampleMessage=$"{n} sample device(s) removed.";confirmSample=false;await CountSample();}catch(Exception ex){sampleMessage=ex.Message;}}
+ private async Task LoadSample(){try{var n=await SampleData.RestoreAsync(await Actor());sampleMessage=$"{n} sample device(s) loaded.";await CountSample();}catch(Exception ex){sampleMessage=ex.Message;}}
+ private async Task Reload()=>users=await accounts!.ListAsync();
+ private async Task<string> Actor(){var current=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireAdmin(current);return current.Identity?.Name??"";}
+ private async Task Create(){try{
+    var actor=await Actor();
+    await accounts!.CreateAsync(username,display,password,role,actor);
+    username="";display="";message="Account created. The password is no longer held in this form.";await Reload();
+ }catch(Exception ex){message=ex.Message;}finally{password="";}}
+ private async Task Run(Guid id,Func<string,Task> action,string done){try{await action(await Actor());message=done;await Reload();}catch(Exception ex){message=ex.Message;}}
+ private async Task SetRole(Guid id,string newRole){try{await accounts!.SetRoleAsync(id,newRole,await Actor());message="Role updated to "+newRole+".";await Reload();}catch(Exception ex){message=ex.Message;await Reload();}}
+}

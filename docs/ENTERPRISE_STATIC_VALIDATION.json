@@ -1,0 +1,129 @@
+{
+  "tool": "JCF enterprise source static verification",
+  "at_utc": "2026-11-06T19:15:30.484905+00:00",
+  "status": "STATIC_PASS",
+  "compiled_dotnet_tests": "NOT_RUN_DOTNET_SDK_UNAVAILABLE",
+  "live_hardware_tests": "NOT_RUN_NO_ACCESS",
+  "checks": [
+    {
+      "check": "SQL and local Identity",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "User bootstrap no hard-coded password",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "20 and 40 MHz policy",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Exclude DFS channels",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Channel 165 cannot be paired 40 MHz",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Approval and payload protection",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Restricted device-write execution (explicit allowlist, keyed on the target device)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Unsupported device writes denied",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Only approved lab device actions supported",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Login anti-forgery and lockout",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "JSON mutating APIs require anti-CSRF",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "AOS-CX documented session and redaction",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Cluster-bound concurrency limit",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Certificate validation enforced (pinned leaf or OS chain; never blanket-accept)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Audit data immutable in EF",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "No automatic production database migration",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Diagnostic target CIDR restriction",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Client identifiers pseudonymized",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Read-only optimization source",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "No test credentials in C#",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "JSON configuration parses",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "Local auth UI and SQL runbook exist",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "SRS implementation matrix exists",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "check": "C# lexer and balanced delimiters",
+      "status": "PASS",
+      "detail": "39 hand-written files, 0 findings"
+    }
+  ]
+}

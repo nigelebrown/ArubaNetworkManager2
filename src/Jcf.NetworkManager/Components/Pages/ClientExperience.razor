@@ -1,0 +1,17 @@
+@page "/client-experience"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+<h1>Client experience & RF monitoring</h1>
+<p class="lede">Compare AP and radio telemetry without guessing client measurements. Field names are not measured RSSI/SNR values.</p>
+<section class="panel"><h2>Latest observations</h2>
+<table><thead><tr><th>Device</th><th>Time (UTC)</th><th>Clients</th><th>Radio channel / width</th><th>Utilization</th><th>Noise floor</th><th>Source / quality</th></tr></thead><tbody>
+@foreach(var t in samples){<tr><td>@(names.GetValueOrDefault(t.DeviceId,"Unknown"))</td><td>@t.AtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+<td>@(t.ClientCount?.ToString()??"Unknown / not reported")</td><td>@(t.RadioChannel?.ToString()??"Unavailable") / @(t.ChannelWidthMhz?.ToString()??"Unavailable") MHz</td>
+<td>@(t.ChannelUtilizationPct?.ToString("0.0")??"Unavailable")%</td><td>@(t.NoiseFloorDbm?.ToString("0.0")??"Unavailable") dBm</td>
+<td><small>@t.ObservationSource</small></td></tr>}
+</tbody></table></section>
+<section class="panel"><h2>Wireless-client verification constraints</h2><p>Client signal quality, per-client retry rates, authentication success and roaming outcomes require associated clients or approved synthetic test stations. Do not convert an empty client list into a perfect health score. A successful REST API response proves command availability only.</p>
+<div class="banner">All displayed numeric fields retain provenance. Until Aruba firmware-specific parsing is certified, the platform will recommend human review but will not use these values to execute RF configuration automatically.</div></section>
+@code {private List<TelemetrySnapshot> samples=new();private Dictionary<Guid,string> names=new();
+ protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();
+  names=await db.Devices.ToDictionaryAsync(x=>x.Id,x=>x.Name);samples=await db.TelemetrySnapshots.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(100).ToListAsync();}}

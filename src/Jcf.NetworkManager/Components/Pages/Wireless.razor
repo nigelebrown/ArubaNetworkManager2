@@ -1,0 +1,31 @@
+@page "/wireless"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@using System.Text.Json
+<h1>Wireless configuration & RF/ARM</h1>
+<p class="lede">Actual Instant REST settings discovered from AP-505 and AP-535, with policy compliance and real cluster scope.</p>
+<div class="banner">80/160 MHz must not be deployed; DFS channels 52–64 and 100–144 are excluded from the compatibility baseline (validate the non-DFS list for the regulatory domain). SSID, band steering, minimum power, ClientMatch and channel-policy changes go through <a href="/configuration">Configuration proposals</a>.</div>
+@foreach(var device in aps){
+ var latest=samples.Where(x=>x.DeviceId==device.Id).OrderByDescending(x=>x.AtUtc).FirstOrDefault();
+ var arm=latest is null?new Dictionary<string,string>():TryArm(latest.ArmJson);
+ <section class="panel"><div class="split"><div><h2>@device.Name <span class="chip">@device.Kind</span>@if(device.IsSimulated){<span class="chip sample">SAMPLE</span>}</h2><small>@device.ManagementIp · @(device.Firmware??"Firmware not read") · @device.LastStatus</small></div>
+ <span class="chip">@(arm.GetValueOrDefault("80mhz-support") == "enabled"?"Policy drift: 80 MHz":"20/40 MHz policy check required")</span></div>
+ @if(latest is null){<p class="muted">Run an API read probe on the device to retrieve current ARM and RF state.</p>}
+ else {<div class="arm-grid">@foreach(var kv in arm){<div><small>@kv.Key</small><strong>@kv.Value</strong></div>}</div>
+ <p class="muted">Source timestamp: @latest.AtUtc.ToString("u"). Not every radio/ClientMatch metric is exposed on every firmware. Do not treat missing readings as zeros.</p>}
+ <h3>Instant cluster members</h3>
+ @if(members.All(x=>x.ConductorDeviceId!=device.Id)){<p class="muted">No reliable parsed member list yet. A successful show aps query is not sufficient to certify complete membership.</p>}
+ else {<table><thead><tr><th>Name</th><th>Model</th><th>Zone</th><th>Confidence</th></tr></thead><tbody>
+ @foreach(var member in members.Where(x=>x.ConductorDeviceId==device.Id)){<tr><td>@member.Name</td><td>@member.Model</td><td>@member.Zone</td><td>@member.DiscoveryConfidence</td></tr>}</tbody></table>}
+ </section>
+}
+@if(aps.Count==0){<section class="panel"><p class="muted">Register AP-505 or AP-535 equipment to start.</p></section>}
+@code {
+ private List<Device> aps=new();private List<TelemetrySnapshot> samples=new();private List<ClusterMember> members=new();
+ protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();
+ aps=await db.Devices.AsNoTracking().Where(x=>x.Kind==DeviceKind.Ap505||x.Kind==DeviceKind.Ap535).ToListAsync();
+ var apIds=aps.Select(a=>a.Id).ToList();
+ samples=await db.TelemetrySnapshots.AsNoTracking().Where(x=>apIds.Contains(x.DeviceId)&&x.ApiConnected).GroupBy(x=>x.DeviceId).Select(g=>g.OrderByDescending(x=>x.AtUtc).First()).ToListAsync();
+ members=await db.ClusterMembers.AsNoTracking().ToListAsync();}
+ private static Dictionary<string,string> TryArm(string data){try{return JsonSerializer.Deserialize<Dictionary<string,string>>(data)??new();}catch{return new();}}
+}

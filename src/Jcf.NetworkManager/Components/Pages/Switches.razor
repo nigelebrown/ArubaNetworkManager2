@@ -1,0 +1,35 @@
+@page "/switches"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+<h1>Switches, VLANs & interfaces</h1>
+<p class="lede">AOS-CX 6100/6200 status, VLAN and interface inventory read over HTTPS REST (port 443).</p>
+<div class="banner">VLAN creation, port access/trunk VLAN membership and PoE state are changed through <a href="/configuration">Configuration proposals</a>: two independent approvals, then execution with baseline, readback and automatic restore. Trunk-to-access conversions and trunk changes that would restrict an "all VLANs" uplink are refused.</div>
+<section class="panel"><h2>Switches (@devices.Count)</h2>
+@if(devices.Count==0){<p class="muted">No CX switches registered. Add them under Devices.</p>}
+else{<table><thead><tr><th>Switch</th><th>Model</th><th>Firmware</th><th>Status</th><th>VLAN objects</th><th>Interfaces</th><th>Ports up</th><th>PoE draw</th></tr></thead><tbody>
+@foreach(var d in devices){var latest=samples.GetValueOrDefault(d.Id);var p=Ports(d.Id);
+<tr><td><b>@d.Name</b> @if(d.IsSimulated){<span class="chip sample">SAMPLE</span>}<br/><small>@d.ManagementIp</small></td><td>@d.Kind</td><td>@(d.Firmware??"Unknown")</td><td>@d.LastStatus</td>
+<td>@(latest?.VlanCount?.ToString()??"Unknown")</td><td>@(latest?.PortCount?.ToString()??"Unknown")</td>
+<td>@(p.Count==0?"—":$"{p.Count(x=>x.LinkState=="up")} / {p.Count}")</td><td>@(p.Any(x=>x.PoeWatts.HasValue)?p.Sum(x=>x.PoeWatts??0).ToString("0.0")+" W":"—")</td></tr>}
+</tbody></table>}
+</section>
+@foreach(var d in devices.Where(x=>Ports(x.Id).Count>0)){
+<section class="panel"><h2>@d.Name interfaces <small class="muted">latest read @Ports(d.Id).Max(x=>x.AtUtc).ToString("yyyy-MM-dd HH:mm") UTC</small></h2>
+<table><thead><tr><th>Port</th><th>Link</th><th>Rx bytes</th><th>Tx bytes</th><th>Rx errors</th><th>Tx errors</th><th>PoE (W)</th></tr></thead><tbody>
+@foreach(var p in Ports(d.Id).OrderBy(x=>PortKey(x.Port))){<tr><td>@p.Port</td><td><span class="chip @(p.LinkState=="up"?"ok":p.LinkState=="down"?"":"warn")">@p.LinkState</span></td>
+<td>@(p.RxBytes?.ToString("N0")??"—")</td><td>@(p.TxBytes?.ToString("N0")??"—")</td><td class="@(p.RxErrors>0?"error":"")">@(p.RxErrors?.ToString()??"—")</td><td>@(p.TxErrors?.ToString()??"—")</td><td>@(p.PoeWatts?.ToString("0.0")??"—")</td></tr>}
+</tbody></table></section>}
+@code {
+ private List<Device> devices=new();private Dictionary<Guid,TelemetrySnapshot> samples=new();private List<PortObservation> ports=new();
+ private List<PortObservation> Ports(Guid id)=>ports.Where(x=>x.DeviceId==id).ToList();
+ private static string PortKey(string port)=>string.Join("/",port.Split('/').Select(x=>x.PadLeft(4,'0')));
+ protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();
+ devices=await db.Devices.AsNoTracking().Where(x=>x.Kind==DeviceKind.Cx6100||x.Kind==DeviceKind.Cx6200).OrderBy(x=>x.Name).ToListAsync();
+ var ids=devices.Select(x=>x.Id).ToList();
+ samples=(await db.TelemetrySnapshots.AsNoTracking().Where(x=>ids.Contains(x.DeviceId)).GroupBy(x=>x.DeviceId)
+   .Select(g=>g.OrderByDescending(x=>x.AtUtc).First()).ToListAsync()).ToDictionary(x=>x.DeviceId);
+ // Latest observation of each port only (one poll writes one row per port).
+ var since=DateTime.UtcNow.AddHours(-6);
+ ports=(await db.PortObservations.AsNoTracking().Where(x=>ids.Contains(x.DeviceId) && x.AtUtc>=since).ToListAsync())
+   .GroupBy(x=>(x.DeviceId,x.Port)).Select(g=>g.OrderByDescending(x=>x.AtUtc).First()).ToList();}
+}

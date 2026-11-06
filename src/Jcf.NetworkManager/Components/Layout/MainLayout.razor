@@ -1,0 +1,44 @@
+@inherits LayoutComponentBase
+@inject IConfiguration Config
+@inject NavigationManager Nav
+<div class="app">
+    <aside class="sidebar">
+        <div class="identity"><span class="eyebrow">JCF · TECHNOLOGY BRANCH</span><strong>Intelligent Network Manager</strong><small>On-premises operations workspace</small></div>
+        <nav aria-label="Application navigation">
+            <NavLink href="/" Match="NavLinkMatch.All">Overview</NavLink>
+            <NavLink href="/devices">Devices & API discovery</NavLink>
+            <NavLink href="/topology">Topology & placement</NavLink>
+            <NavLink href="/operations">Operations & compliance</NavLink>
+            <NavLink href="/locations">Locations & groups</NavLink>
+            <NavLink href="/groups">AP groups & target locations</NavLink>
+            <NavLink href="/wireless">Wireless, RF & ARM</NavLink>
+            <NavLink href="/client-experience">Client experience & RF</NavLink>
+            <NavLink href="/switches">Switches & VLANs</NavLink>
+            <NavLink href="/configuration">Configuration proposals</NavLink>
+            <NavLink href="/changes">Approvals & execution</NavLink>
+            <NavLink href="/capabilities">API capability matrix</NavLink>
+            <NavLink href="/alerts">Alerts & telemetry</NavLink>
+            <NavLink href="/recommendations">Optimization & approvals</NavLink>
+            <NavLink href="/kiosk">Executive rotating display</NavLink>
+            <NavLink href="/audit">Change & audit history</NavLink>
+            <AuthorizeView Roles="PlatformAdmin"><NavLink href="/admin/users">Administration</NavLink></AuthorizeView>
+            @if(!Config.GetValue<bool>("Jcf:DemoMode")){<NavLink href="/account/password">Change password</NavLink>}
+            @if(!Config.GetValue<bool>("Jcf:DemoMode")){<NavLink href="/account/logout">Sign out</NavLink>}
+        </nav>
+        <AuthorizeView><Authorized><div class="whoami"><small>Signed in as</small><strong>@context.User.Identity?.Name</strong>
+            <small>@string.Join(", ",JcfRoles.All.Where(context.User.IsInRole))</small></div></Authorized></AuthorizeView>
+        @if(Config.GetValue<bool>("Jcf:DemoMode")){<div class="persona"><small>DEMO PERSONA (simulation only)</small>
+            @foreach(var p in DemoPersonas.All){<a href="/demo/persona/@p.Key?returnUrl=@Uri.EscapeDataString(Nav.ToBaseRelativePath(Nav.Uri).Insert(0,"/"))" data-enhance-nav="false">@p.Label</a>}</div>}
+        <div class="sidefoot">RELEASE @Jcf.NetworkManager.Services.AppInfo.Version · Approval-controlled implementation<br/>Device writes @(writes?"ON for allowlisted targets":"OFF") · sample devices are simulated</div>
+    </aside>
+    <div class="content"><header class="topbar"><span>JCF ICT / Network Operations</span><span class="mode">APPROVAL-FIRST · @(writes?"DEVICE WRITES ENABLED (ALLOWLISTED, CERTIFIED)":"DEVICE WRITES DISABLED")@(Config.GetValue<bool>("Jcf:DemoMode")?" · DEMO MODE":"")</span></header>
+        <main class="main"><ErrorBoundary @ref="boundary"><ChildContent>@Body</ChildContent>
+            <ErrorContent><div class="banner error" role="alert">This page hit an unexpected error and was stopped. No device configuration was changed. <button class="smallbutton" @onclick="Recover">Try again</button></div></ErrorContent></ErrorBoundary></main></div>
+</div>
+
+@code {
+    private bool writes => Jcf.NetworkManager.Workflow.DeviceWritePolicy.From(Config).Enabled;
+    private ErrorBoundary? boundary;
+    protected override void OnParametersSet() => boundary?.Recover();
+    private void Recover() => boundary?.Recover();
+}

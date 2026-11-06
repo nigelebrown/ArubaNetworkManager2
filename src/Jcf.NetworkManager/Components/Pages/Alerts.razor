@@ -1,0 +1,33 @@
+@page "/alerts"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AlertService AlertTriage
+@inject AuthenticationStateProvider Authentication
+<h1>Alerts & telemetry</h1>
+<p class="lede">API availability, failed or interrupted changes and recovery alerts. Device-API alerts clear automatically on the next healthy read.</p>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+<div class="actionbar"><button class="@(showResolved?"secondary":"")" @onclick="async()=>{showResolved=false;await Load();}">Active (@activeCount)</button>
+<button class="@(showResolved?"":"secondary")" @onclick="async()=>{showResolved=true;await Load();}">Include resolved</button></div>
+<section class="panel"><h2>@(showResolved?"All alerts":"Active alerts")</h2>
+@if(alerts.Count==0){<p class="muted">No alerts. A lack of samples is unknown, not proof of network health.</p>}
+else{<table><thead><tr><th>Severity</th><th>Device</th><th>Category</th><th>Details</th><th>First / last seen UTC</th><th>State</th>@if(isOperator){<th></th>}</tr></thead><tbody>
+@foreach(var a in alerts){<tr><td><span class="chip @(a.Severity=="Critical"?"bad":"warn")">@a.Severity</span></td>
+<td>@(a.DeviceId is Guid id?names.GetValueOrDefault(id,"Removed device"):"—")</td><td>@a.Category</td><td>@a.Detail</td>
+<td>@a.FirstSeenUtc.ToString("yyyy-MM-dd HH:mm")<br/><small>@a.LastSeenUtc.ToString("yyyy-MM-dd HH:mm")</small></td><td>@a.State</td>
+@if(isOperator){<td class="actions">@if(a.State=="Open"){<button class="smallbutton secondary" @onclick='()=>Set(a.Id,"Acknowledged")'>Acknowledge</button>}
+@if(a.State!="Resolved"){<button class="smallbutton" @onclick='()=>Set(a.Id,"Resolved")'>Resolve</button>}</td>}</tr>}
+</tbody></table>}</section>
+<section class="panel"><h2>Newest telemetry</h2><table><thead><tr><th>Device</th><th>Timestamp UTC</th><th>API</th><th>Clients</th><th>Issue</th></tr></thead><tbody>
+@foreach(var t in samples){<tr><td>@names.GetValueOrDefault(t.DeviceId,"Removed device")</td><td>@t.AtUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@(t.ApiConnected?"Connected":"Unavailable")</td><td>@(t.ClientCount?.ToString()??"Unknown")</td><td>@(t.Problem??"—")</td></tr>}
+</tbody></table></section>
+@code {private List<NetworkAlert> alerts=new();private List<TelemetrySnapshot> samples=new();private Dictionary<Guid,string> names=new();
+ private bool showResolved,isOperator;private int activeCount;private string message="";
+ protected override async Task OnInitializedAsync(){isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);await Load();}
+ private async Task Load(){await using var db=await DbFactory.CreateDbContextAsync();
+  names=await db.Devices.AsNoTracking().ToDictionaryAsync(x=>x.Id,x=>x.Name);
+  activeCount=await db.NetworkAlerts.CountAsync(x=>x.State!="Resolved");
+  alerts=await db.NetworkAlerts.AsNoTracking().Where(x=>showResolved||x.State!="Resolved").OrderByDescending(x=>x.LastSeenUtc).Take(200).ToListAsync();
+  samples=await db.TelemetrySnapshots.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(50).ToListAsync();}
+ private async Task Set(Guid id,string state){try{var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+  await AlertTriage.TransitionAsync(id,state,user.Identity?.Name??"unknown");message="Alert "+state.ToLowerInvariant()+".";await Load();}catch(Exception ex){message=ex.Message;}}
+}

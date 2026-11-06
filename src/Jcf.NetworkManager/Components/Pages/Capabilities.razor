@@ -1,0 +1,33 @@
+@page "/capabilities"
+@attribute [Authorize]
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject CapabilityService CapabilitiesSvc
+@inject AuthenticationStateProvider Authentication
+<h1>Device API capability certification</h1>
+<p class="lede">Track verified device/firmware operations separately from vendor documentation. Do not certify a write without peer-reviewed lab evidence.</p>
+<div class="banner">A real device can only execute an approved change when its operation is recorded here as <b>Write/restore lab-verified</b> for the device's <b>current firmware</b> (a firmware change voids the certification). Record it only after a witnessed lab test of write, readback and restore on the same model/firmware. Sample devices carry simulated certifications.</div>
+<section class="panel"><h2>Record reviewed API capability</h2><div class="formgrid">
+<label>Device<select @bind="selectedDevice"><option value="">Select device</option>@foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind · @(d.Firmware??"firmware unknown")@(d.IsSimulated?" (sample)":"")</option>}</select></label>
+<label>Operation<select @bind="action"><optgroup label="Instant AP"><option value="CreateSsid">Create SSID + VLAN</option><option value="ChangeBandSteering">ARM band steering</option><option value="ChangeMinTxPower">ARM min power</option><option value="ChangeClientMatch">ARM ClientMatch</option><option value="SetChannelPolicy">ARM 20/40 MHz non-DFS channel policy</option></optgroup>
+<optgroup label="AOS-CX switch"><option value="CreateSwitchVlan">Switch VLAN create</option><option value="SetSwitchPortVlan">Port access/trunk VLAN</option><option value="SetSwitchPoe">Port PoE enable/disable</option></optgroup></select></label>
+<label>Capability status<select @bind="state"><option value="Unknown">Unknown</option><option value="ReadVerified">Read verified</option><option value="WriteVerified">Write/restore lab-verified</option><option value="Unsupported">Unsupported</option><option value="Blocked">Blocked by device management mode</option></select></label>
+<label>Reviewed evidence reference<input @bind="evidence" placeholder="Lab report ID / reviewed change ticket" /></label></div>
+<div class="actionbar"><button @onclick="Save">Record evidence (admin only)</button></div>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}</section>
+<section class="panel"><h2>Current capability matrix</h2>
+<table><thead><tr><th>Device</th><th>Firmware</th><th>Operation</th><th>Certification</th><th>Evidence</th></tr></thead><tbody>
+@foreach(var c in records){<tr><td>@(devices.FirstOrDefault(d=>d.Id==c.DeviceId)?.Name??"Unknown")</td><td>@c.Firmware</td><td>@c.Operation</td><td><span class="chip @(c.State==ApiCapabilityState.WriteVerified?(StaleFirmware(c)?"warn":"ok"):"")">@c.State</span>@if(StaleFirmware(c)){<br/><small class="error">firmware changed - void</small>}</td><td>@c.EvidenceReference</td></tr>}
+</tbody></table></section>
+@code {
+ private List<Device> devices=new();private List<DeviceCapability> records=new();private string selectedDevice="",action="CreateSsid",state="Unknown",evidence="",message="";
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();records=await db.DeviceCapabilities.AsNoTracking().ToListAsync();}
+ private bool StaleFirmware(DeviceCapability c)=>devices.FirstOrDefault(d=>d.Id==c.DeviceId)?.Firmware is { } fw && fw!=c.Firmware;
+ private async Task Save(){try{var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+ JcfRoles.RequireAdmin(principal);
+ if(!Guid.TryParse(selectedDevice,out var id)||!Enum.TryParse<ConfigAction>(action,out var ac)||!Enum.TryParse<ApiCapabilityState>(state,out var s))throw new ArgumentException("Choose device and valid capability.");
+ await CapabilitiesSvc.RecordAsync(id,ac,s,evidence,principal.Identity?.Name??"unknown",JcfRoles.IsAdmin(principal));
+ message="Evidence recorded against the current device firmware. Certification will expire on firmware change.";await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+}

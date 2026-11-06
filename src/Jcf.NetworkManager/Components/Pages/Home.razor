@@ -1,0 +1,33 @@
+@page "/"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject IConfiguration Config
+<h1>Network operations overview</h1>
+<p class="lede">One workspace for APs, switches, locations, configuration evidence and recommendations.</p>
+@if(Config.GetValue<bool>("Jcf:DemoMode")) { <div class="banner">DEMO MODE (in-memory database, local personas). Sample devices are simulated; devices you register are real and are contacted over the network.</div> }
+@if(sample>0){<div class="banner">@sample sample device(s) present (<span class="chip sample">SAMPLE</span>). They are never contacted and can be removed by an administrator.</div>}
+<div class="stats">
+    <div class="stat"><small>Registered devices</small><strong>@deviceCount</strong></div>
+    <div class="stat"><small>Online / healthy</small><strong>@healthy</strong></div>
+    <div class="stat"><small>APs</small><strong>@aps</strong></div>
+    <div class="stat"><small>Pending recommendations</small><strong>@recommendations</strong></div>
+    <div class="stat"><small>Active alerts</small><strong>@alerts</strong></div>
+</div>
+<section class="panel"><h2>System safety status</h2>
+    <div class="twocol"><p><b>Device integration:</b> Aruba Instant REST on 4343; AOS-CX REST on 443; encrypted credential profiles; certificate pinning.<br/><b>Radio policy:</b> 20/40 MHz only; review any device advertising 80 MHz.<br/><b>Optimization:</b> analysis and recommendations only.</p>
+    <p><b>Configuration changes:</b> proposal → independent approval(s) → certified, allowlisted execution with readback and restore.<br/><b>Device writes to real equipment:</b> @(Jcf.NetworkManager.Workflow.DeviceWritePolicy.From(Config).Enabled?"ENABLED for allowlisted targets":"disabled")<br/><b>Data completeness:</b> missing client statistics are unknown, never zero.</p></div></section>
+<section class="panel"><h2>Recent devices</h2>
+@if(devices.Count==0){<p class="muted">No devices yet. Register an AP or switch under Devices & API discovery.</p>}
+else {<table><thead><tr><th>Device</th><th>Model</th><th>Status</th><th>Last observation (UTC)</th></tr></thead>
+<tbody>@foreach(var d in devices){<tr><td>@d.Name @if(d.IsSimulated){<span class="chip sample">SAMPLE</span>}</td><td>@d.Kind</td><td><span class="chip">@d.LastStatus</span></td><td>@(d.LastSeenUtc?.ToString("yyyy-MM-dd HH:mm")??"No observations")</td></tr>}</tbody></table>}
+</section>
+@code {
+ private int deviceCount,healthy,aps,recommendations,alerts,sample;
+ private List<Device> devices=new();
+ protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();
+  devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).Take(40).ToListAsync();
+  deviceCount=await db.Devices.CountAsync();healthy=await db.Devices.CountAsync(x=>x.LastStatus=="Healthy");
+  aps=await db.Devices.CountAsync(x=>x.Kind==DeviceKind.Ap505||x.Kind==DeviceKind.Ap535);
+  recommendations=await db.Recommendations.CountAsync(x=>x.State==RecommendationState.Pending);
+  alerts=await db.NetworkAlerts.CountAsync(x=>x.State!="Resolved");sample=await db.Devices.CountAsync(x=>x.IsSimulated);}
+}

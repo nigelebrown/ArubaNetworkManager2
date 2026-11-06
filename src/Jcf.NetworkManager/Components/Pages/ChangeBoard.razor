@@ -1,0 +1,51 @@
+@page "/changes"
+@attribute [Authorize]
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject ChangeWorkflowService Changes
+@inject IConfiguration Config
+@inject AuthenticationStateProvider Authentication
+<h1>Independent approvals & execution</h1>
+<p class="lede">Exact-payload approvals, segregation of duties, immutable execution evidence and lab-gated device changes.</p>
+@if(Config.GetValue<bool>("Jcf:DemoMode")){<p class="muted">Demo: use the persona switcher in the sidebar to submit as an operator and review as two different approvers.</p>}
+<div class="banner">Sample devices execute against the simulator. Real devices execute only when device writes are enabled for their address, the operation is certified for their current firmware, they were read healthy within 15 minutes and the Instant cluster still has the approved number of APs. An approval alone cannot bypass these checks.</div>
+@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+<section class="panel"><h2>Configuration proposals</h2>
+@if(rows.Count==0){<p class="muted">No proposals. Open Configuration proposals to submit one.</p>}
+else {<table><thead><tr><th>Device / action / scope</th><th>Proposed payload (no secrets)</th><th>Requester / independent reviewers</th><th>State</th><th>Actions</th></tr></thead><tbody>
+@foreach(var p in rows){<tr><td>@(names.GetValueOrDefault(p.DeviceId,"Removed device"))<br/><small>@p.Action</small>@if(p.BaselineClusterMemberCount is int n){<br/><small class="@(n>1?"error":"muted")">Instant scope: @n AP(s)</small>}</td>
+<td><code>@p.PayloadJson</code><br/><small>SHA256: @(p.PayloadSha256[..Math.Min(12,p.PayloadSha256.Length)])...</small></td>
+<td>@p.RequestedBy<br/><small>@(p.ApprovedBy??"Awaiting first approver") / @(p.SecondApprovedBy??"—")</small></td>
+<td><span class="chip">@p.State</span><br/><small>@p.LastOutcome</small></td><td>
+@if(p.State is ConfigProposalState.PendingApproval or ConfigProposalState.PendingSecondApproval){
+<button class="secondary" @onclick="()=>Approve(p)">Approve</button>
+<button class="secondary" @onclick="()=>Reject(p)">Reject</button>}
+@if(p.State==ConfigProposalState.Approved){<button @onclick="()=>Execute(p.Id)">Execute approved change</button>}
+</td></tr>}
+</tbody></table>}
+</section>
+<section class="panel"><h2>Execution and recovery history</h2>
+<table><thead><tr><th>When (UTC)</th><th>Proposal</th><th>Stage</th><th>Status</th><th>Detail</th></tr></thead><tbody>
+@foreach(var e in events){<tr><td>@e.AtUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@(e.ProposalId.ToString()[..8])</td><td>@e.Stage</td><td>@e.Status</td><td>@e.Detail</td></tr>}
+</tbody></table></section>
+@code {
+ private string message="";private List<ConfigProposal> rows=new();private List<ConfigExecutionEvent> events=new();private Dictionary<Guid,string> names=new();
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();rows=await db.ConfigProposals.AsNoTracking().OrderByDescending(x=>x.RequestedUtc).Take(60).ToListAsync();
+ events=await db.ConfigExecutionEvents.AsNoTracking().OrderByDescending(x=>x.AtUtc).Take(100).ToListAsync();names=await db.Devices.ToDictionaryAsync(x=>x.Id,x=>x.Name);}
+ private Task Approve(ConfigProposal p)=>Review(p.Id,"approve",p.State);
+ private Task Reject(ConfigProposal p)=>Review(p.Id,"reject",p.State);
+ private async Task Review(Guid id,string decision,ConfigProposalState state){try{
+  var user=(await Authentication.GetAuthenticationStateAsync()).User;
+  // The signed-in identity is always the reviewer; separation of duties is enforced by the service.
+  await Changes.DecideAsync(id,decision,user.Identity?.Name??"",JcfRoles.IsApprover(user));
+  message=Config.GetValue<bool>("Jcf:DemoMode")?"Review recorded (demo simulation; no physical device contacted).":"Review recorded.";
+  await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+ private async Task Execute(Guid id){try{
+  var user=(await Authentication.GetAuthenticationStateAsync()).User;
+  var result=await Changes.ExecuteAsync(id,user.Identity?.Name??"",JcfRoles.IsOperator(user));
+  message="Execution result: "+result.State+". "+result.LastOutcome;
+  await Reload();
+ }catch(Exception ex){message=ex.Message;}}
+}

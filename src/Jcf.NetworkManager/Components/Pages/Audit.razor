@@ -1,0 +1,9 @@
+@page "/audit"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+<h1>Change & audit history</h1>
+<p class="lede">Trace device onboarding, API probes, analysis runs and scheduling decisions.</p>
+<section class="panel"><h2>Recent audit events</h2><table><thead><tr><th>UTC</th><th>Actor</th><th>Action</th><th>Target</th><th>Outcome</th></tr></thead><tbody>
+@foreach(var e in logs){<tr><td>@e.AtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td><td>@e.Actor</td><td>@e.Action</td><td>@e.Target</td><td>@e.Outcome</td></tr>}
+</tbody></table>@if(logs.Count==0){<p class="muted">No events recorded yet.</p>}</section>
+@code {private List<AuditEvent> logs=new();protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();logs=await db.AuditEvents.AsNoTracking().OrderByDescending(e=>e.AtUtc).Take(150).ToListAsync();}}

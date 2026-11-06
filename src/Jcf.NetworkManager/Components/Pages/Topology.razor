@@ -1,0 +1,29 @@
+@page "/topology"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject EnterpriseOperationsService Operations
+@inject AuthenticationStateProvider Authentication
+<h1>Network topology & device placement</h1>
+<p class="lede">Physical organization, actual Instant cluster membership and uplink evidence are separate. Nothing on this page modifies the devices.</p>
+<section class="panel"><h2>Assign a device to a JCF location</h2><div class="formgrid">
+<label>Device<select @bind="deviceId"><option value="">Choose device</option>@foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name (@d.Kind)</option>}</select></label>
+<label>Location<select @bind="locationId"><option value="">Choose location</option>@foreach(var l in locations){<option value="@l.Id.ToString()">@l.Name (@l.Type)</option>}</select></label></div>
+<button @onclick="Assign">Save location assignment</button>@if(message.Length>0){<p role="status" class="feedback">@message</p>}
+</section>
+<section class="panel"><h2>Cluster membership discovered through the API</h2><table><thead><tr><th>Virtual controller</th><th>AP member</th><th>Model</th><th>Zone</th><th>Evidence</th></tr></thead><tbody>
+@foreach(var m in members){<tr><td>@DeviceName(m.ConductorDeviceId)</td><td>@m.Name</td><td>@m.Model</td><td>@(m.Zone??"Unknown")</td><td>@m.DiscoveryConfidence</td></tr>}
+</tbody></table></section>
+<section class="panel"><h2>Registered devices and physical locations</h2><table><thead><tr><th>Equipment</th><th>Type</th><th>Location</th><th>Instant VC/stack reference</th><th>Health</th></tr></thead><tbody>
+@foreach(var d in devices){<tr><td>@d.Name</td><td>@d.Kind</td><td>@(locations.FirstOrDefault(l=>l.Id==d.LocationId)?.Name??"Unassigned")</td><td>@(d.ClusterName??"Unverified")</td><td>@d.LastStatus</td></tr>}
+</tbody></table></section>
+@code {
+ private string deviceId="",locationId="",message="";private List<Device> devices=new();private List<Location> locations=new();private List<ClusterMember> members=new();
+ protected override async Task OnInitializedAsync()=>await Reload();
+ private async Task Reload(){await using var db=await DbFactory.CreateDbContextAsync();devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();locations=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();members=await db.ClusterMembers.AsNoTracking().OrderBy(x=>x.Name).Take(1000).ToListAsync();}
+ private string DeviceName(Guid id)=>devices.FirstOrDefault(x=>x.Id==id)?.Name??"Unknown VC";
+ private async Task Assign(){try{var user=(await Authentication.GetAuthenticationStateAsync()).User;
+ if(!JcfRoles.IsOperator(user))throw new UnauthorizedAccessException("Operator role required.");
+ if(!Guid.TryParse(deviceId,out var dev)||!Guid.TryParse(locationId,out var loc))throw new ArgumentException("Select both device and location.");
+ await Operations.PlaceAsync(dev,loc,user.Identity?.Name??"unknown");message="Device placement recorded with history; AP configuration unchanged.";await Reload();}
+ catch(Exception ex){message=ex.Message;}}
+}
