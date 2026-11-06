@@ -27,7 +27,9 @@ jobs:
       - name: Validate native installers and source policy
         run: |
           set -euo pipefail
-          bash -n INSTALL_NATIVE_091.sh deploy/native/PREPARE_NATIVE.sh deploy/native/ACTIVATE_NATIVE.sh
+          bash -n INSTALL_NATIVE_091.sh INSTALL_TEST_HTTP_ALL.sh CHECK_NATIVE_ENVIRONMENT.sh deploy/native/PREPARE_NATIVE.sh deploy/native/ACTIVATE_NATIVE.sh
+          grep -q 'Jcf:TemporaryHttp' src/Jcf.NetworkManager/Program.cs
+          grep -q 'MSSQL_PID=Developer' INSTALL_TEST_HTTP_ALL.sh
           python3 deploy/native/TEST_NATIVE_SAFETY.py
           python3 scripts/TEST_REAL_PILOT_CLIENT_OFFLINE.py
       - name: Restore, compile and run offline application tests
