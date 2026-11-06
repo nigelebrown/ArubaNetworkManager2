@@ -1,0 +1,38 @@
+name: Native .NET 10 CI - no hardware/network scans
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: No generated or secret files tracked
+        run: |
+          set -euo pipefail
+          ! git ls-files | grep -E '(^|/)(bin|obj|TestResults|__pycache__)/'
+          ! git ls-files | grep -E '(\.pfx$|\.pem$|\.key$|\.env$|\.secret$)'
+      - name: Validate native installers and source policy
+        run: |
+          set -euo pipefail
+          bash -n INSTALL_NATIVE_091.sh deploy/native/PREPARE_NATIVE.sh deploy/native/ACTIVATE_NATIVE.sh
+          python3 deploy/native/TEST_NATIVE_SAFETY.py
+          python3 scripts/TEST_REAL_PILOT_CLIENT_OFFLINE.py
+      - name: Restore, compile and run offline application tests
+        run: |
+          set -euo pipefail
+          dotnet restore Jcf.NetworkManager.slnx
+          dotnet build Jcf.NetworkManager.slnx -c Release --no-restore
+          dotnet test tests/Jcf.NetworkManager.Tests.csproj -c Release --no-build --no-restore
