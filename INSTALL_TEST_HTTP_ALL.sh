@@ -72,7 +72,7 @@ grep -Fq 'Jcf:TemporaryHttp' "$SRC/src/Jcf.NetworkManager/Program.cs" ||
 CFG=/etc/jcfnetwork-v091
 SEC="$CFG/secrets"
 STATE=/var/lib/jcfnetwork-v091
-install -d -m 0700 -o root -g root "$CFG" "$SEC"
+install -d -m 0750 -o root -g jcfnetwork91 "$CFG" "$SEC"
 install -d -m 0700 -o jcfnetwork91 -g jcfnetwork91 "$STATE" "$STATE/keys"
 SECRETS_READY=0
 if rpm -q --quiet mssql-server; then
