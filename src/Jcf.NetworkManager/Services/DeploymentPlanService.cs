@@ -205,6 +205,7 @@ public sealed class DeploymentPlanService(
                 var work=step with{BeforeSha256=before,State="BackedUp"};
                 // No REST / no physical API. The simulation applies only SQL hash state.
                 await SetSimulatedAsync(db,step.DeviceId,step.DesiredSha256,ct);
+                await db.SaveChangesAsync(ct); // readback must come from persisted SQL, not the in-memory tracking graph
                 var after=await SimulatorStateAsync(db,step.DeviceId,ct);
                 var verify=after==step.DesiredSha256 && injectFailureOnDevice!=step.DeviceId;
                 work=work with{AfterSha256=after,State=verify?"Verified":"VerificationFailed",
@@ -222,6 +223,7 @@ public sealed class DeploymentPlanService(
                 {
                     var step=executed[i];
                     await SetSimulatedAsync(db,step.DeviceId,step.BeforeSha256??"UNCONFIGURED",ct);
+                    await db.SaveChangesAsync(ct);
                     var restored=await SimulatorStateAsync(db,step.DeviceId,ct);
                     if(restored!=step.BeforeSha256)rollbackComplete=false;
                     executed[i]=step with{State=restored==step.BeforeSha256?"SimulatedRollbackVerified":"RecoveryRequired",
