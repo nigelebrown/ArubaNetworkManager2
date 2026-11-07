@@ -126,6 +126,7 @@ else
     {
         <section class="panel">
             <h2>Step 5 — Confirm model, names and location</h2>
+            <datalist id="onboarding-profiles">@foreach(var p in profiles){<option value="@p.Reference" />}</datalist>
             <p class="muted">Existing devices are prepopulated. For a new device, choose the exact model yourself; TCP discovery cannot reliably identify it.</p>
             @foreach(var c in Selected())
             {
