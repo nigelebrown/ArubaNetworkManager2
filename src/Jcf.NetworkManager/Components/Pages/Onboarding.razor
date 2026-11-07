@@ -373,9 +373,18 @@ else
     {
         working=true;ClearMessage();
         try{
-            await OperatorAsync();
+            var actor=await OperatorAsync();
             await ReloadAsync();
             var result=await Discovery.ScanAsync(scanStart.Trim(),scanEnd.Trim(),accessPoints);
+            await using(var db=await Db.CreateDbContextAsync())
+            {
+                db.AuditEvents.Add(new AuditEvent {
+                    Actor=actor,Action="Read-only device discovery",
+                    Target=scanStart.Trim()+" - "+scanEnd.Trim(),
+                    Outcome=(accessPoints?"Instant AP TCP 4343: ":"CX TCP 443: ")+result.Count(x=>x.Reachable)+" reachable / "+result.Count+" checked"
+                });
+                await db.SaveChangesAsync();
+            }
             candidates=[];
             foreach(var obs in result)
                 AddObserved(obs.Address,obs.Reachable?$"TCP {obs.Port} open (vendor/model not verified)":$"TCP {obs.Port} not responding");
