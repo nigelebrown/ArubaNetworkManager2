@@ -25,7 +25,11 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         string[] MandatoryPaths,string Notes);
     public sealed record Binding(Guid TemplateId,int PinnedVersion,string DeviceOverrideJson,
         string OptimizationOverrideJson,Guid? OptimizationRecommendationId,
-        string AssignedBy,string Reason,DateTime UpdatedUtc,string? PropagationApprovalId);
+        string AssignedBy,string Reason,DateTime UpdatedUtc,string? PropagationApprovalId,
+        string? DeviceOverrideAuthor=null,string? DeviceOverrideReason=null,
+        DateTime? DeviceOverrideAtUtc=null,
+        string? OptimizationAuthor=null,string? OptimizationReason=null,
+        DateTime? OptimizationAtUtc=null);
     public sealed record Rollout(Guid TemplateId,int TargetVersion,string RequestedBy,
         string Reason,string State,string? FirstApprovedBy,string? SecondApprovedBy,
         string ImpactSha256);
@@ -200,7 +204,9 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             p=>p.Scope==AssignmentScope&&p.Name==AssignmentKey(deviceId),ct)
             ??throw new KeyNotFoundException("Assign a global template to the device first.");
         var old=Decode<Binding>(assignment.NonSecretJson);
-        var next=old with {DeviceOverrideJson=json,AssignedBy=actor,Reason=reason,UpdatedUtc=DateTime.UtcNow};
+        var next=old with {DeviceOverrideJson=json,DeviceOverrideAuthor=actor,
+            DeviceOverrideReason=reason,DeviceOverrideAtUtc=DateTime.UtcNow,
+            UpdatedUtc=DateTime.UtcNow};
         await ResolveForBindingAsync(db,deviceId,next,ct);
         SnapshotAssignment(db,assignment);
         assignment.Version++;assignment.NonSecretJson=Encode(next);
@@ -233,8 +239,9 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             ??throw new KeyNotFoundException("A global template assignment is required first.");
         var old=Decode<Binding>(assignment.NonSecretJson);
         var next=old with {OptimizationOverrideJson=normalized,
-            OptimizationRecommendationId=approvedRecommendationId,AssignedBy=actor,
-            Reason=reason,UpdatedUtc=DateTime.UtcNow};
+            OptimizationRecommendationId=approvedRecommendationId,
+            OptimizationAuthor=actor,OptimizationReason=reason,
+            OptimizationAtUtc=DateTime.UtcNow,UpdatedUtc=DateTime.UtcNow};
         await ResolveForBindingAsync(db,deviceId,next,ct);
         SnapshotAssignment(db,assignment);
         assignment.Version++;assignment.NonSecretJson=Encode(next);
@@ -273,11 +280,16 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         var siteLayer=new DeviceTemplateResolver.Layer(siteOverrides,"S",site?.Version??1,
             site?.CreatedBy??"site","Site-specific configuration variance",null,site?.CreatedUtc??DateTime.MinValue);
         var deviceLayer=new DeviceTemplateResolver.Layer(binding.DeviceOverrideJson,"D",
-            1,binding.AssignedBy,binding.Reason,null,binding.UpdatedUtc);
+            1,binding.DeviceOverrideAuthor??binding.AssignedBy,
+            binding.DeviceOverrideReason??binding.Reason,null,
+            binding.DeviceOverrideAtUtc??binding.UpdatedUtc);
         var opt=string.IsNullOrWhiteSpace(binding.OptimizationOverrideJson)||
             binding.OptimizationRecommendationId is null?null:
             new DeviceTemplateResolver.Layer(binding.OptimizationOverrideJson,"O",1,
-                binding.AssignedBy,binding.Reason,binding.OptimizationRecommendationId.ToString(),binding.UpdatedUtc);
+                binding.OptimizationAuthor??binding.AssignedBy,
+                binding.OptimizationReason??binding.Reason,
+                binding.OptimizationRecommendationId.ToString(),
+                binding.OptimizationAtUtc??binding.UpdatedUtc);
         var result=DeviceTemplateResolver.Resolve(baseLayer,siteLayer,deviceLayer,opt,
             mandatoryPaths:version.MandatoryPaths);
         return new DeviceEffective(device,catalog,version,binding,result,
