@@ -8,7 +8,19 @@ Scope: Aruba Instant AOS-8 AP-505 and AP-535; CentOS .NET 10; SQL Server; real A
 - The page does not query APs directly; the existing validated DeviceService probe pathway is the only approved network reader. Missing telemetry is unknown, not zero.
 - No additional schema migration or write permission added.
 
-## Prioritized enhancements (planned, not implemented)
+## WLAN and ARM policy sprint — implemented, not yet live-hardware certified
+
+The additional `/wlan-profiles` screen supports validated, SQL-backed change proposals for:
+- **WLAN profile create/update:** SSID, VLAN, purpose, radio band, WPA2 Personal, WPA3 Personal, WPA2/WPA3 transition, WPA2 Enterprise, WPA3 Enterprise, protected management frames, client isolation, enabled state; external PSK/RADIUS **references** only (never plaintext secrets).
+- **SSID enable/disable** and **delete:** exact SSID confirmation and explicit impact acknowledgement for deletion.
+- **ARM/RF controls:** default/fair/preferred airtime fairness; 2.4/5 GHz minimum and maximum transmit-power bounds; no 80/160 MHz setting or unapproved DFS enablement.
+- **Simulation:** actions use the existing SQL change-proposal and independent-approval workflow. Applied sample-device proposals are replayed deterministically to display the effective simulated WLAN/ARM state. No physical device is contacted, and no schema migration is needed.
+- **Live-device safety:** new actions require two independent approvers but remain **proposal-only for real APs**. Both the workflow service and real Aruba execution gateway refuse uncertified writes. The UI is not a claim of real Aruba firmware support.
+- **Validation:** automated tests cover authentication-mode combinations, required secret references, guest isolation, WPA3/PMF, invalid/extra fields, RF power bounds, confirmation of deletion, dual approval, live-hardware write refusal and simulated replay.
+
+Only the existing, narrowly certified legacy lab actions retain their previous device-write policy. **Do not use this UI to assume a real SSID, RADIUS profile or airtime-fairness setting has been deployed.**
+
+## Remaining enhancements (planned, not implemented)
 
 | Priority | Module | Requested features and acceptance |
 |---|---|---|
