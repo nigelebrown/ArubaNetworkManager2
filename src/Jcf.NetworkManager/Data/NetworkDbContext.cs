@@ -108,6 +108,10 @@ public sealed class NetworkDbContext(DbContextOptions<NetworkDbContext> options)
         // Optimistic concurrency on the workflow state: UPDATE ... WHERE State=<value read>. Two concurrent
         // Execute (or approve) requests cannot both move the same proposal; the loser gets a conflict, not a second device write.
         model.Entity<ConfigProposal>().Property(d => d.State).IsConcurrencyToken();
+        // Existing PolicyTemplate.Version column doubles as the optimistic concurrency guard
+        // for revisions, independent deployment approvals, port mapping and wizard updates.
+        // No schema change: the Version integer column is already present.
+        model.Entity<PolicyTemplate>().Property(x=>x.Version).IsConcurrencyToken();
         model.Entity<DeviceCapability>().Property(d => d.State).HasMaxLength(48);
         model.Entity<Recommendation>().Property(d => d.State).HasMaxLength(48);
         // Retention purges filter on time alone; these indexes keep MaintenanceWorker's batched deletes from scanning whole tables.
