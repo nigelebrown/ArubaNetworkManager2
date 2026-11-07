@@ -13,7 +13,7 @@
  <h2>Scope and impact</h2>
  <div class="formgrid">
  <label>Target Instant virtual controller/AP
- <select @bind="selectedId"><option value="">Choose a target...</option>
+ <select @bind="selectedId" @bind:after="ReloadAsync"><option value="">Choose a target...</option>
  @foreach(var ap in aps){<option value="@ap.Id.ToString()">@ap.Name — @ap.Kind @(ap.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
  </select></label>
  <label>Change action
@@ -88,6 +88,18 @@
  <p class="muted">Preview only. Submission creates a SQL proposal and audit record; it does not configure an AP.</p>
  }
 </section>
+@if(Target is { IsSimulated: true } && simulated is not null){
+<section class="panel">
+ <h2>Effective sample WLAN state (from applied SQL proposals)</h2>
+ <p class="muted">This is the simulated result of fully approved, applied actions. It survives restarts because the audit/proposal history is stored in SQL. It is NOT a live Aruba configuration readback.</p>
+ @if(simulated.Wlans.Count==0){<p class="muted">No simulated WLAN profile has been applied yet. Create a proposal, obtain two independent approvals and execute it against the sample AP.</p>}
+ else{<table><thead><tr><th>SSID</th><th>VLAN</th><th>Security</th><th>Band</th><th>Purpose</th><th>State</th><th>PMF</th><th>Isolation</th><th>Credential reference</th></tr></thead><tbody>
+ @foreach(var wlan in simulated.Wlans){<tr><td>@wlan.Ssid</td><td>@wlan.Vlan</td><td>@wlan.SecurityMode</td><td>@wlan.Band</td><td>@wlan.Purpose</td><td>@(wlan.Enabled?"Enabled":"Disabled")</td><td>@wlan.Pmf</td><td>@(wlan.ClientIsolation?"Yes":"No")</td><td>@wlan.CredentialReference</td></tr>}
+ </tbody></table>}
+ <h3>Simulated ARM profile</h3>
+ <p>Airtime fairness: <strong>@(simulated.Rf.AirtimeFairnessMode??"Not set")</strong> · Power bounds: <strong>@(simulated.Rf.MinDbm is int min && simulated.Rf.MaxDbm is int max?$"{simulated.Rf.PowerBand}: {min}–{max} dBm":"Not set")</strong></p>
+</section>
+}
 <section class="panel">
  <h2>Recent WLAN/RF proposals</h2>
  @if(proposals.Count==0){<p class="muted">No additional WLAN/RF proposals found.</p>}
@@ -99,6 +111,7 @@
 @code {
  private List<Device> aps=new();
  private List<ConfigProposal> proposals=new();
+ private SimulatedWlanState.State? simulated;
  private string selectedId="",action="UpsertWlanProfile",ssid="JCF-STAFF",purpose="staff",band="dual",
   securityMode="wpa2-enterprise",pskSecretRef="",radiusProfileRef="JCF_RADIUS",pmf="required",
   enabled="true",isolate="false",confirmSsid="",impactConfirmed="false",fairness="default-access",
@@ -115,6 +128,14 @@
    p.Action==ConfigAction.UpsertWlanProfile || p.Action==ConfigAction.SetWlanEnabled ||
    p.Action==ConfigAction.DeleteWlanProfile || p.Action==ConfigAction.SetAirtimeFairness ||
    p.Action==ConfigAction.SetRfPowerBounds).OrderByDescending(p=>p.RequestedUtc).Take(35).ToListAsync();
+  simulated=null;
+  if(Target is {IsSimulated:true} sample)
+  {
+   var history=await db.ConfigProposals.AsNoTracking()
+    .Where(p=>p.DeviceId==sample.Id && p.State==ConfigProposalState.Applied)
+    .OrderBy(p=>p.RequestedUtc).ToListAsync();
+   simulated=SimulatedWlanState.Replay(history);
+  }
  }
  private string BuildPayload(){
   if(!Enum.TryParse<ConfigAction>(action,out var a)||!ApProfilePolicy.ProposalOnly(a))
