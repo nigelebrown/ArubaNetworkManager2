@@ -15,7 +15,7 @@
   <label>Select switch
    <select @bind="deviceId" @bind:after="LoadSelectedAsync">
     <option value="">Choose switch...</option>
-    @foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind @(d.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+    @foreach(var item in devices){<option value="@item.Id.ToString()">@item.Name · @item.Kind @(item.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
    </select>
   </label>
  </div>
