@@ -1,0 +1,159 @@
+@page "/wlan-profiles"
+@attribute [Authorize]
+@using System.Text.Json
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject ChangeWorkflowService Changes
+@inject AuthenticationStateProvider Authentication
+
+<h1>WLAN Profiles &amp; ARM Policy</h1>
+<p class="lede">Define, validate, preview and request approval for Aruba Instant AP-505 and AP-535 SSID/WLAN security and RF policy. New controls are planning-only on live APs until firmware-specific APIs, readback and rollback pass acceptance.</p>
+<div class="banner">Real SQL-backed user accounts and auditable proposals. Never enter a Wi-Fi passphrase or RADIUS shared secret: provide an existing encrypted credential-profile reference only. Changes for sample APs exercise the simulation gateway; real hardware writes are blocked for these new actions.</div>
+<section class="panel">
+ <h2>Scope and impact</h2>
+ <div class="formgrid">
+ <label>Target Instant virtual controller/AP
+ <select @bind="selectedId"><option value="">Choose a target...</option>
+ @foreach(var ap in aps){<option value="@ap.Id.ToString()">@ap.Name — @ap.Kind @(ap.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+ </select></label>
+ <label>Change action
+ <select @bind="action">
+  <option value="UpsertWlanProfile">Create or update WLAN profile</option>
+  <option value="SetWlanEnabled">Enable or disable WLAN</option>
+  <option value="DeleteWlanProfile">Delete WLAN (requires impact confirmation)</option>
+  <option value="SetAirtimeFairness">ARM airtime fairness mode</option>
+  <option value="SetRfPowerBounds">RF transmit-power bounds</option>
+ </select></label>
+ </div>
+ @if(Target is { } target){
+ <p><strong>Scope:</strong> @target.Name · @target.ManagementIp · @(target.ClusterName??"VC not identified") · firmware @(target.Firmware??"Unknown")</p>
+ @if(target.IsSimulated){<p class="muted">SIMULATED target: no physical device network access or configuration write.</p>}
+ else{<p class="banner">REAL target: proposal and approval only. The unverified actions on this page cannot execute against a live AP, even if other device-write settings are enabled. Validate the entire virtual-controller cluster scope first.</p>}
+ }
+</section>
+<section class="panel">
+ <h2>Proposed settings</h2>
+ <div class="formgrid">
+ @if(action is "UpsertWlanProfile" or "SetWlanEnabled" or "DeleteWlanProfile"){
+ <label>SSID / WLAN profile name<input @bind="ssid" maxlength="32" placeholder="JCF-STAFF" /></label>
+ }
+ @if(action=="UpsertWlanProfile"){
+ <label>Purpose<select @bind="purpose"><option value="staff">Staff</option><option value="admin">Administrative</option><option value="guest">Guest / isolated</option><option value="voice">Voice</option></select></label>
+ <label>VLAN ID (2–4094)<input type="number" min="2" max="4094" @bind="vlan" /></label>
+ <label>RF band<select @bind="band"><option value="dual">Both (2.4/5 GHz)</option><option value="5ghz">5 GHz only</option><option value="2.4ghz">2.4 GHz only</option></select></label>
+ <label>Authentication<select @bind="securityMode">
+  <option value="wpa2-personal">WPA2 Personal (PSK)</option>
+  <option value="wpa3-personal">WPA3 Personal (SAE)</option>
+  <option value="wpa2-wpa3-transition">WPA2/WPA3 Transition</option>
+  <option value="wpa2-enterprise">WPA2 Enterprise (802.1X/RADIUS)</option>
+  <option value="wpa3-enterprise">WPA3 Enterprise (802.1X/RADIUS)</option>
+ </select></label>
+ @if(securityMode.Contains("enterprise")){
+ <label>RADIUS profile reference (no shared secret)<input @bind="radiusProfileRef" maxlength="40" placeholder="JCF_RADIUS" /></label>
+ }else{
+ <label>PSK vault reference (no plaintext key)<input @bind="pskSecretRef" maxlength="40" placeholder="JCF_WIFI_PSK" /></label>
+ }
+ <label>Protected management frames<select @bind="pmf"><option value="capable">PMF capable (WPA2/transition)</option><option value="required">PMF required</option></select></label>
+ <label>WLAN state<select @bind="enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+ <label>Client-to-client isolation<select @bind="isolate"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+ <p class="muted">Guest WLANs must enforce client isolation. WPA3-only WLANs must require PMF. Network-path and regulatory validation are required before real implementation.</p>
+ }
+ @if(action=="SetWlanEnabled"){
+ <label>Desired WLAN state<select @bind="enabled"><option value="true">Enable</option><option value="false">Disable</option></select></label>
+ }
+ @if(action=="DeleteWlanProfile"){
+ <label>Confirm exact SSID name<input @bind="confirmSsid" maxlength="32" placeholder="Repeat the SSID exactly" /></label>
+ <label>Confirm client/service impact<select @bind="impactConfirmed"><option value="false">No — do not submit</option><option value="true">Yes — verified impact and recovery plan</option></select></label>
+ }
+ @if(action=="SetAirtimeFairness"){
+ <label>Airtime fairness<select @bind="fairness"><option value="default-access">Default access</option><option value="fair-access">Fair access</option><option value="preferred-access">Preferred access</option></select></label>
+ <p class="muted">These are vendor-documented ARM modes. Real-device API syntax is NOT certified or enabled by this proposal form.</p>
+ }
+ @if(action=="SetRfPowerBounds"){
+ <label>Radio band<select @bind="band"><option value="5ghz">5 GHz</option><option value="2.4ghz">2.4 GHz</option></select></label>
+ <label>Minimum power (dBm)<input type="number" min="3" max="20" @bind="minDbm" /></label>
+ <label>Maximum power (dBm)<input type="number" min="6" max="30" @bind="maxDbm" /></label>
+ <p class="muted">A bounded range does not override the JCF 20/40 MHz channel policy. ARM still owns dynamic radio decisions. Power bounds apply to VC scope after separately certified rollout.</p>
+ }
+ <label>Justification and change window<input @bind="reason" maxlength="300" placeholder="Operational reason, affected users and maintenance window" /></label>
+ </div>
+ <div class="actionbar">
+  <button class="secondary" @onclick="PreviewAsync">Validate and preview</button>
+  <button @onclick="SubmitAsync">Submit for two independent approvals</button>
+ </div>
+ @if(!string.IsNullOrEmpty(message)){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+ @if(!string.IsNullOrEmpty(preview)){
+ <h3>Canonical, non-secret proposal preview</h3>
+ <pre><code>@preview</code></pre>
+ <p class="muted">Preview only. Submission creates a SQL proposal and audit record; it does not configure an AP.</p>
+ }
+</section>
+<section class="panel">
+ <h2>Recent WLAN/RF proposals</h2>
+ @if(proposals.Count==0){<p class="muted">No additional WLAN/RF proposals found.</p>}
+ else {<table><thead><tr><th>Submitted UTC</th><th>Target</th><th>Action</th><th>State</th><th>Submitted by</th></tr></thead><tbody>
+ @foreach(var p in proposals){<tr><td>@p.RequestedUtc.ToString("MM-dd HH:mm")</td><td>@(aps.FirstOrDefault(x=>x.Id==p.DeviceId)?.Name??"AP removed")</td><td>@p.Action</td><td>@p.State</td><td>@p.RequestedBy</td></tr>}
+ </tbody></table>}
+ <p>Approvals and change history: <a href="/changes">Change Board</a> · Live AP certification and source readings: <a href="/ap-management">AP Management</a>.</p>
+</section>
+@code {
+ private List<Device> aps=new();
+ private List<ConfigProposal> proposals=new();
+ private string selectedId="",action="UpsertWlanProfile",ssid="JCF-STAFF",purpose="staff",band="dual",
+  securityMode="wpa2-enterprise",pskSecretRef="",radiusProfileRef="JCF_RADIUS",pmf="required",
+  enabled="true",isolate="false",confirmSsid="",impactConfirmed="false",fairness="default-access",
+  reason="Controlled test and rollback review",message="",preview="";
+ private int vlan=120,minDbm=9,maxDbm=18;
+ private bool error;
+ private Device? Target=>Guid.TryParse(selectedId,out var id)?aps.FirstOrDefault(x=>x.Id==id):null;
+ protected override async Task OnInitializedAsync()=>await ReloadAsync();
+ private async Task ReloadAsync(){
+  await using var db=await DbFactory.CreateDbContextAsync();
+  aps=await db.Devices.AsNoTracking().Where(d=>d.Kind==DeviceKind.Ap505 || d.Kind==DeviceKind.Ap535).OrderBy(d=>d.Name).ToListAsync();
+  if(string.IsNullOrEmpty(selectedId)&&aps.Count>0)selectedId=aps[0].Id.ToString();
+  proposals=await db.ConfigProposals.AsNoTracking().Where(p=>
+   p.Action==ConfigAction.UpsertWlanProfile || p.Action==ConfigAction.SetWlanEnabled ||
+   p.Action==ConfigAction.DeleteWlanProfile || p.Action==ConfigAction.SetAirtimeFairness ||
+   p.Action==ConfigAction.SetRfPowerBounds).OrderByDescending(p=>p.RequestedUtc).Take(35).ToListAsync();
+ }
+ private string BuildPayload(){
+  if(!Enum.TryParse<ConfigAction>(action,out var a)||!ApProfilePolicy.ProposalOnly(a))
+   throw new ArgumentException("Invalid WLAN/RF proposal action.");
+  object body=a switch {
+   ConfigAction.UpsertWlanProfile=>new {
+    ssid,vlan,securityMode,band,purpose,pskSecretRef=securityMode.Contains("enterprise")?"":pskSecretRef,
+    radiusProfileRef=securityMode.Contains("enterprise")?radiusProfileRef:"",
+    clientIsolation=isolate=="true",pmf,enabled=enabled=="true"},
+   ConfigAction.SetWlanEnabled=>new {ssid,enabled=enabled=="true"},
+   ConfigAction.DeleteWlanProfile=>new {ssid,confirmSsid,impactConfirmed=impactConfirmed=="true"},
+   ConfigAction.SetAirtimeFairness=>new {mode=fairness},
+   ConfigAction.SetRfPowerBounds=>new {band,minDbm,maxDbm},
+   _=>throw new InvalidOperationException("Unsupported AP action")
+  };
+  return ApProfilePolicy.Normalize(a,JsonSerializer.Serialize(body));
+ }
+ private Task PreviewAsync(){
+  try {preview=Format(BuildPayload());message="Payload validated. No device was contacted.";error=false;}
+  catch(Exception ex){preview="";message=ex.Message;error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SubmitAsync(){
+  try {
+   var actor=(await Authentication.GetAuthenticationStateAsync()).User;
+   if(!JcfRoles.IsOperator(actor))throw new UnauthorizedAccessException("Operator role required to submit proposals.");
+   if(Target is not Device target)throw new ArgumentException("Choose an access point or virtual controller.");
+   if(reason.Trim().Length<10)throw new ArgumentException("Provide operational justification (10+ characters).");
+   var body=BuildPayload();
+   var type=Enum.Parse<ConfigAction>(action);
+   var proposal=await Changes.SubmitAsync(target.Id,type,body,actor.Identity?.Name??"unknown",reason);
+   preview=Format(body);
+   message="Submitted "+proposal.Id+". No device changed; two independent approvers required.";
+   error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string Format(string json){
+  using var doc=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(doc.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}
