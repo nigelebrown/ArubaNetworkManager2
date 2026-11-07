@@ -168,6 +168,9 @@ builder.Services.AddScoped<SiteConfigurationService>();
 builder.Services.AddScoped<TemplateCatalogService>();
 builder.Services.AddScoped<SiteWizardService>();
 builder.Services.AddScoped<ConfigurationImportService>();
+builder.Services.AddScoped<SwitchPortManagerService>();
+builder.Services.AddScoped<DeploymentPlanService>();
+builder.Services.AddScoped<ConfigurationVarianceService>();
 builder.Services.AddScoped<NetworkDiagnosticsService>();
 builder.Services.AddScoped<IncidentService>();
 builder.Services.AddScoped<AlertService>();
@@ -240,6 +243,34 @@ api.MapGet("/security/csrf",(HttpContext context,IAntiforgery antiforgery) => {
     var tokens=antiforgery.GetAndStoreTokens(context);
     return Results.Ok(new {header="X-CSRF-TOKEN",token=tokens.RequestToken});
 });
+// Operator-only non-secret configuration exports; no device adapters invoked.
+api.MapGet("/reports/variance/{siteId:guid}/{format}",
+    async(Guid siteId,string format,ConfigurationVarianceService variance,
+        IDbContextFactory<NetworkDbContext> dbf,CancellationToken ct)=>{
+        await using var db=await dbf.CreateDbContextAsync(ct);
+        if(!await db.Locations.AsNoTracking().AnyAsync(x=>x.Id==siteId,ct))
+            return Results.NotFound();
+        var report=await variance.BuildAsync(siteId,ct);
+        var stem="JCF-Variance-"+siteId.ToString("N");
+        return format.ToLowerInvariant() switch {
+            "csv"=>Results.File(VarianceExportService.Csv(report),"text/csv; charset=utf-8",stem+".csv"),
+            "xlsx"=>Results.File(VarianceExportService.Excel(report),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",stem+".xlsx"),
+            "pdf"=>Results.File(VarianceExportService.Pdf(report),"application/pdf",stem+".pdf"),
+            _=>Results.NotFound()
+        };
+    }).RequireAuthorization("Operator");
+api.MapGet("/switches/{deviceId:guid}/ports.csv",
+    async(Guid deviceId,SwitchPortManagerService ports,CancellationToken ct)=>{
+        try{
+            var rows=await ports.InventoryAsync(deviceId,ct);
+            var csv=SwitchPortManagerService.ExportCsv(
+                rows.Where(x=>x.Mapping is not null).Select(x=>x.Mapping!));
+            return Results.File(System.Text.Encoding.UTF8.GetBytes(csv),"text/csv; charset=utf-8",
+                "JCF-PortMapping-"+deviceId.ToString("N")+".csv");
+        }catch(KeyNotFoundException){return Results.NotFound();}
+        catch(ArgumentException){return Results.BadRequest();}
+    }).RequireAuthorization("Operator");
 api.MapGet("/devices",async(IDbContextFactory<NetworkDbContext> dbf)=>{
     await using var db=await dbf.CreateDbContextAsync();
     return await db.Devices.AsNoTracking().OrderBy(d=>d.Name).Select(d=>new {
