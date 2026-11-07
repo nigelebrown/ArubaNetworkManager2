@@ -1,0 +1,172 @@
+@page "/wlan-readback"
+@attribute [Authorize]
+@using System.Text.Json
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject DeviceService Devices
+@inject AuthenticationStateProvider Authentication
+
+<h1>Aruba WLAN Readback &amp; Compliance</h1>
+<p class="lede">Read-only inspection of Aruba Instant AP-505/AP-535 SSID profile settings, RF policy observations, and pending change proposals. Collected through the existing scoped, authenticated Instant REST probe.</p>
+<div class="banner">AOS-8 CLI parsing is not yet certified against each deployed firmware. Missing, ambiguous or stale data means <b>unknown</b>, not compliant. Neither this page nor its checks issues a device configuration command.</div>
+
+<section class="panel">
+<h2>Readback fleet status</h2>
+<div class="arm-grid">
+ <div><small>Registered Instant AP/VC targets</small><strong>@aps.Count</strong></div>
+ <div><small>Real devices</small><strong>@aps.Count(x=>!x.IsSimulated)</strong></div>
+ <div><small>Targets with readback evidence</small><strong>@snapshots.Count</strong></div>
+ <div><small>Simulated APs</small><strong>@aps.Count(x=>x.IsSimulated)</strong></div>
+</div>
+<div class="formgrid">
+ <label>Select AP / Instant virtual controller
+ <select @bind="selectedId"><option value="">Choose a device...</option>
+ @foreach(var ap in aps){<option value="@ap.Id.ToString()">@ap.Name — @ap.Kind @(ap.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+ </select></label>
+</div>
+<div class="actionbar">
+ <button class="secondary" disabled="@working" @onclick="LoadSelectionAsync">Show stored readback</button>
+ @if(selected is { IsSimulated:false } && canProbe)
+ {<button disabled="@working" @onclick="ProbeNowAsync">Read AP now (no configuration changes)</button>}
+</div>
+@if(!string.IsNullOrEmpty(message)){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+</section>
+@if(selected is { } device)
+{
+ <section class="panel">
+  <h2>@device.Name @if(device.IsSimulated){<span class="chip sample">SIMULATED</span>}</h2>
+  <p>@device.Kind · @device.ManagementIp · @(device.ClusterName??"VC unknown") · firmware @(device.Firmware??"Unknown")</p>
+  @if(device.IsSimulated)
+  {
+   <p>The sample AP never makes an Aruba API request. Use <a href="/wlan-profiles">WLAN Profiles</a> to review effective simulated settings applied through the approval workflow.</p>
+  }
+  else if(snapshot is null)
+  {
+   <p class="muted">No valid, sanitized WLAN readback has been recorded. This is not evidence that the AP has no WLANs. Use the authorized read-only probe to collect new evidence.</p>
+  }
+  else
+  {
+   <p><b>Snapshot:</b> @snapshot.CapturedUtc.ToString("u") · firmware @snapshot.Firmware · source: Instant REST show running-config</p>
+   <p class="muted">Data quality: <strong>Uncertified CLI projection</strong> · @(DateTime.UtcNow-snapshot.CapturedUtc>TimeSpan.FromHours(24)?"STALE: older than 24 hours":"stored reading"). Confirm values on the target AP before authorizing changes.</p>
+   @if(profiles.Count==0){<p class="muted">Snapshot could not be decoded; do not use it for compliance decisions.</p>}
+   else {
+    <h3>Discovered SSID profiles (@profiles.Count)</h3>
+    <table><thead><tr><th>Profile</th><th>Broadcast SSID</th><th>VLAN</th><th>Security mode token</th><th>Band</th><th>Type</th><th>State</th><th>Dynamic VLAN</th></tr></thead><tbody>
+     @foreach(var w in profiles)
+     {<tr><td>@w.Profile</td><td>@(w.Essid??"Unknown")</td><td>@(w.Vlan?.ToString()??"Unknown")</td><td>@(w.OpMode??"Unknown")</td><td>@(w.Band??"Unknown")</td><td>@(w.Purpose??"Unknown")</td><td>@(w.Enabled is bool b?(b?"Enabled":"Disabled"):"Unknown")</td><td>@(w.DynamicVlan?"Detected":"Not verified")</td></tr>}
+    </tbody></table>
+    <p class="muted">Security mode is the exact allowlisted vendor opmode token, not a verified WPA3/802.1X authentication outcome. Absence of a field is never interpreted as disabled.</p>
+   }
+  }
+ </section>
+ <section class="panel">
+  <h2>Read-only review findings</h2>
+  @if(findings.Count==0){<p class="muted">No rules triggered on the available records. This is NOT an assurance of full compliance or evidence of a successful WLAN test.</p>}
+  else {
+   <table><thead><tr><th>SSID</th><th>Finding</th><th>Priority</th><th>Explanation</th></tr></thead><tbody>
+    @foreach(var item in findings)
+    {<tr><td>@item.Ssid</td><td>@item.Rule</td><td>@item.Level</td><td>@item.Detail</td></tr>}
+   </tbody></table>
+  }
+  <h3>Current ARM policy evidence</h3>
+  @if(arm.Count==0){<p class="muted">ARM settings are unavailable. No default or compliance status is inferred.</p>}
+  else {
+   <table><thead><tr><th>ARM setting</th><th>Last observed value</th></tr></thead><tbody>
+   @foreach(var kv in arm.OrderBy(x=>x.Key)){<tr><td>@kv.Key</td><td>@kv.Value</td></tr>}
+   </tbody></table>
+   @if(arm.TryGetValue("80mhz-support",out var width) && width=="enabled")
+   {<p class="banner error">Observed 80 MHz support enabled. JCF permits 20/40 MHz only. Escalate for an approved and firmware-certified configuration change.</p>}
+  }
+ </section>
+ <section class="panel">
+  <h2>Pending WLAN/ARM proposals</h2>
+  @if(pending.Count==0){<p class="muted">No pending or approved WLAN/RF change proposals for this AP.</p>}
+  else {<table><thead><tr><th>Action</th><th>State</th><th>Requested by</th><th>Submitted UTC</th></tr></thead><tbody>
+   @foreach(var p in pending){<tr><td>@p.Action</td><td>@p.State</td><td>@p.RequestedBy</td><td>@p.RequestedUtc.ToString("yyyy-MM-dd HH:mm")</td></tr>}
+   </tbody></table>}
+  <p><a href="/wlan-profiles">Create a proposal</a> · <a href="/changes">Independent approvals</a> · <a href="/capabilities">Firmware capability evidence</a></p>
+ </section>
+}
+@code {
+ private List<Device> aps=new();
+ private Dictionary<Guid,ConfigurationSnapshot> snapshots=new();
+ private Device? selected;
+ private ConfigurationSnapshot? snapshot;
+ private List<InstantWlanReadback.Wlan> profiles=new();
+ private List<InstantWlanCompliance.Finding> findings=new();
+ private List<ConfigProposal> pending=new();
+ private Dictionary<string,string> arm=new(StringComparer.OrdinalIgnoreCase);
+ private string selectedId="",message="";
+ private bool error,working,canProbe;
+
+ protected override async Task OnInitializedAsync()
+ {
+  canProbe=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  await LoadAsync();
+ }
+ private async Task LoadAsync()
+ {
+  await using var db=await DbFactory.CreateDbContextAsync();
+  aps=await db.Devices.AsNoTracking()
+   .Where(x=>x.Kind==DeviceKind.Ap505 || x.Kind==DeviceKind.Ap535)
+   .OrderBy(x=>x.Name).ToListAsync();
+  var rows=await db.ConfigurationSnapshots.AsNoTracking()
+   .Where(x=>x.CapturedBy=="instant-wlan-readonly")
+   .OrderByDescending(x=>x.CapturedUtc).Take(1000).ToListAsync();
+  snapshots=rows.GroupBy(x=>x.DeviceId).ToDictionary(x=>x.Key,x=>x.First());
+  if(string.IsNullOrWhiteSpace(selectedId)&&aps.Count>0) selectedId=aps[0].Id.ToString();
+  await LoadSelectionAsync();
+ }
+ private async Task LoadSelectionAsync()
+ {
+  selected=Guid.TryParse(selectedId,out var id)?aps.FirstOrDefault(x=>x.Id==id):null;
+  snapshot=null;profiles=new();findings=new();pending=new();arm=new(StringComparer.OrdinalIgnoreCase);
+  if(selected is null)return;
+  snapshots.TryGetValue(selected.Id,out snapshot);
+  if(snapshot is not null)
+  {
+   try {
+    using var doc=JsonDocument.Parse(snapshot.SanitizedJson);
+    if(doc.RootElement.GetProperty("schema").GetString()=="instant-wlan-readback/v1")
+    {
+     profiles=doc.RootElement.GetProperty("profiles")
+      .Deserialize<List<InstantWlanReadback.Wlan>>()??new();
+     findings=InstantWlanCompliance.Evaluate(profiles).ToList();
+    }
+   } catch(JsonException) {profiles=new();findings=new();}
+     catch(KeyNotFoundException){profiles=new();findings=new();}
+  }
+  await using var db=await DbFactory.CreateDbContextAsync();
+  var s=await db.TelemetrySnapshots.AsNoTracking()
+   .Where(x=>x.DeviceId==selected.Id).OrderByDescending(x=>x.AtUtc).FirstOrDefaultAsync();
+  if(s is not null && !string.IsNullOrWhiteSpace(s.ArmJson))
+  {
+   try {
+    var parsed=JsonSerializer.Deserialize<Dictionary<string,string>>(s.ArmJson)??new();
+    arm=parsed.Where(x=>InstantConnector.ArmKeys.Contains(x.Key))
+     .ToDictionary(x=>x.Key,x=>x.Value,StringComparer.OrdinalIgnoreCase);
+   } catch(JsonException) {}
+  }
+  pending=await db.ConfigProposals.AsNoTracking()
+   .Where(p=>p.DeviceId==selected.Id && (p.State==ConfigProposalState.PendingApproval ||
+    p.State==ConfigProposalState.PendingSecondApproval || p.State==ConfigProposalState.Approved))
+   .OrderByDescending(x=>x.RequestedUtc).Take(30).ToListAsync();
+ }
+ private async Task ProbeNowAsync()
+ {
+  if(working || selected is null || selected.IsSimulated)return;
+  working=true;
+  try {
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;
+   if(!JcfRoles.IsOperator(user))throw new UnauthorizedAccessException("Operator permission required.");
+   var outcome=await Devices.ProbeAsync(selected.Id,user.Identity?.Name??"operator");
+   message=outcome.Connected
+    ? "Read-only probe finished. WLAN parse: "+(outcome.WlanReadback?.Status??"Unavailable")+
+      ". A stored readback is not yet firmware-certified."
+    : "AP probe did not complete. Verify the allowed management subnet, API port, certificate and credentials.";
+   error=!outcome.Connected;
+   await LoadAsync();
+  }
+  catch(Exception ex){message="Read-only API probe failed: "+ex.GetType().Name;error=true;}
+  finally{working=false;}
+ }
+}
