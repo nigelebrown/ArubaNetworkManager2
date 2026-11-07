@@ -17,6 +17,7 @@ public sealed class CxConnector(DeviceHttpFactory factory,SecretResolver secrets
         string? firmware=null,problem=null,csrf=null;
         int? vlans=null,ports=null;
         var portReadings=new List<DetectedPort>();
+        CxSwitchReadback.Result? configReadback=null;
         bool authenticated=false;
         try
         {
@@ -47,6 +48,11 @@ public sealed class CxConnector(DeviceHttpFactory factory,SecretResolver secrets
                 ports=interfaces.RootElement.ValueKind==JsonValueKind.Object? interfaces.RootElement.EnumerateObject().Count():
                     interfaces.RootElement.ValueKind==JsonValueKind.Array? interfaces.RootElement.GetArrayLength():null;
                 portReadings=ParsePortReadings(interfaces.RootElement);
+                // Save typed non-secret configuration values only. The complete device response
+                // is transient and MUST never be persisted or logged.
+                configReadback=CxSwitchReadback.Parse(interfaces.RootElement);
+                tests.Add("INFO CX interface readback: "+configReadback.Status+
+                    " (version-specific configuration semantics require lab acceptance)");
             }
         }
         catch(Exception ex) when(ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
@@ -60,7 +66,7 @@ public sealed class CxConnector(DeviceHttpFactory factory,SecretResolver secrets
                 try { using var _ = await http.PostAsync("rest/latest/logout",null,CancellationToken.None); } catch { }
             }
         }
-        return new ProbeResult(authenticated,firmware,null,null,vlans,ports,new(),new(),new(),problem,tests,null,portReadings);
+        return new ProbeResult(authenticated,firmware,null,null,vlans,ports,new(),new(),new(),problem,tests,null,portReadings,null,null,configReadback);
 
         async Task<JsonDocument?> Read(string path,bool required)
         {
