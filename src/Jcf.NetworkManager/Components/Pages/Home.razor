@@ -3,7 +3,17 @@
 @inject IDbContextFactory<NetworkDbContext> DbFactory
 @inject IConfiguration Config
 <h1>Network operations overview</h1>
-<p class="lede">One workspace for APs, switches, locations, configuration evidence and recommendations.</p>
+<p class="lede">Start with a guided process to discover or import existing Aruba equipment. The workflow leads through credentials, network discovery, inventory, read-only import, and approval-controlled configuration.</p>
+<section class="panel">
+    <h2>Start here — choose your task</h2>
+    <div class="wizard-choices">
+        <a class="wizard-choice-link" href="/onboarding?type=ap">Discover &amp; onboard Aruba AP-505 / AP-535</a>
+        <a class="wizard-choice-link" href="/onboarding?type=switch">Discover &amp; onboard Aruba CX 6100 / 6200</a>
+        <a class="wizard-choice-link" href="/devices">Review existing inventory</a>
+        <a class="wizard-choice-link" href="/credentials">Create API credential profiles</a>
+    </div>
+    <p class="muted">Onboarding: 1. Equipment → 2. Credentials → 3. Discovery → 4. Select → 5. Location → 6. Register → 7. Import read-only state → 8. Configure now or later.</p>
+</section>
 @if(Config.GetValue<bool>("Jcf:DemoMode")) { <div class="banner">DEMO MODE (in-memory database, local personas). Sample devices are simulated; devices you register are real and are contacted over the network.</div> }
 @if(sample>0){<div class="banner">@sample sample device(s) present (<span class="chip sample">SAMPLE</span>). They are never contacted and can be removed by an administrator.</div>}
 <div class="stats">
@@ -17,7 +27,7 @@
     <div class="twocol"><p><b>Device integration:</b> Aruba Instant REST on 4343; AOS-CX REST on 443; encrypted credential profiles; certificate pinning.<br/><b>Radio policy:</b> 20/40 MHz only; review any device advertising 80 MHz.<br/><b>Optimization:</b> analysis and recommendations only.</p>
     <p><b>Configuration changes:</b> proposal → independent approval(s) → certified, allowlisted execution with readback and restore.<br/><b>Device writes to real equipment:</b> @(Jcf.NetworkManager.Workflow.DeviceWritePolicy.From(Config).Enabled?"ENABLED for allowlisted targets":"disabled")<br/><b>Data completeness:</b> missing client statistics are unknown, never zero.</p></div></section>
 <section class="panel"><h2>Recent devices</h2>
-@if(devices.Count==0){<p class="muted">No devices yet. Register an AP or switch under Devices & API discovery.</p>}
+@if(devices.Count==0){<p class="muted">No devices yet. Start with Discover &amp; onboard in the left navigation.</p>}
 else {<table><thead><tr><th>Device</th><th>Model</th><th>Status</th><th>Last observation (UTC)</th></tr></thead>
 <tbody>@foreach(var d in devices){<tr><td>@d.Name @if(d.IsSimulated){<span class="chip sample">SAMPLE</span>}</td><td>@d.Kind</td><td><span class="chip">@d.LastStatus</span></td><td>@(d.LastSeenUtc?.ToString("yyyy-MM-dd HH:mm")??"No observations")</td></tr>}</tbody></table>}
 </section>
