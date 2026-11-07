@@ -250,6 +250,33 @@ public sealed class DeviceService(IDbContextFactory<NetworkDbContext> dbFactory,
             ArmJson=JsonSerializer.Serialize(result.Arm),
             MetricAvailabilityJson=JsonSerializer.Serialize(result.Fields),Problem=result.Issue is { Length: > 200 } p ? p[..200] : result.Issue
         });
+        // Save ONLY the allowlisted, typed, non-secret WLAN projection from AOS-8 running-config.
+        // Raw running configuration (which may include passphrases and RADIUS secrets) is discarded
+        // inside the connector and is never logged, serialized or stored.
+        if(!device.IsSimulated && result.Connected &&
+           result.WlanReadback is {IsUsable:true} wlanReadback)
+        {
+            var sanitized=JsonSerializer.Serialize(new {
+                schema="instant-wlan-readback/v1",
+                quality="Uncertified CLI parsing; not a validated hardware configuration",
+                profiles=wlanReadback.Profiles
+            });
+            if(sanitized.Length<=11500)
+            {
+                var digest=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sanitized)));
+                var previous=await db.ConfigurationSnapshots.AsNoTracking()
+                    .Where(x=>x.DeviceId==device.Id && x.CapturedBy=="instant-wlan-readonly")
+                    .OrderByDescending(x=>x.CapturedUtc).FirstOrDefaultAsync(ct);
+                if(previous?.DataSha256!=digest)
+                {
+                    db.ConfigurationSnapshots.Add(new ConfigurationSnapshot {
+                        DeviceId=device.Id,Firmware=device.Firmware??"Unknown",
+                        SanitizedJson=sanitized,DataSha256=digest,
+                        CapturedBy="instant-wlan-readonly"
+                    });
+                }
+            }
+        }
         if(result.Observation is RfObservation r)
             db.RadioObservations.Add(new RadioObservation{DeviceId=device.Id,Channel=r.Channel,WidthMhz=r.WidthMhz,
                 UtilizationPct=r.UtilizationPct,NoiseFloorDbm=r.NoiseFloorDbm,ErrorPct=r.ClientRetryPct,
