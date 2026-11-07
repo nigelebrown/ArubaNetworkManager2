@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Jcf.NetworkManager.Connectors;
 using Jcf.NetworkManager.Data;
 using Jcf.NetworkManager.Domain;
 using Jcf.NetworkManager.Workflow;
