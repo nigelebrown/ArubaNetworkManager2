@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Text;
 using Jcf.NetworkManager.Data;
 using Jcf.NetworkManager.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +27,8 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         string OptimizationOverrideJson,Guid? OptimizationRecommendationId,
         string AssignedBy,string Reason,DateTime UpdatedUtc,string? PropagationApprovalId);
     public sealed record Rollout(Guid TemplateId,int TargetVersion,string RequestedBy,
-        string Reason,string State,string? FirstApprovedBy,string? SecondApprovedBy);
+        string Reason,string State,string? FirstApprovedBy,string? SecondApprovedBy,
+        string ImpactSha256);
     public sealed record DeviceEffective(Device Device,PolicyTemplate Template,Definition Definition,
         Binding Binding,DeviceTemplateResolver.Result Resolved,string? SiteName);
     public sealed record Impact(Guid DeviceId,string DeviceName,string? Site,int PinnedVersion,
@@ -318,9 +321,12 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
                 var before=await ResolveForBindingAsync(db,deviceId,binding,ct);
                 var next=await ResolveForBindingAsync(db,deviceId,binding with{PinnedVersion=current.Version},ct);
                 var oldValues=before.Resolved.Settings.ToDictionary(x=>x.Path,x=>x.ValueJson);
-                var changed=next.Resolved.Settings
-                    .Where(x=>!oldValues.TryGetValue(x.Path,out var value)||value!=x.ValueJson)
-                    .Select(x=>x.Path).ToArray();
+                var newValues=next.Resolved.Settings.ToDictionary(x=>x.Path,x=>x.ValueJson);
+                var changed=oldValues.Keys.Union(newValues.Keys,StringComparer.Ordinal)
+                    .Where(key=>!oldValues.TryGetValue(key,out var beforeValue) ||
+                                !newValues.TryGetValue(key,out var afterValue) ||
+                                beforeValue!=afterValue)
+                    .OrderBy(x=>x,StringComparer.Ordinal).ToArray();
                 results.Add(new Impact(deviceId,before.Device.Name,before.SiteName,
                     binding.PinnedVersion,current.Version,changed,null));
             }
@@ -331,6 +337,13 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             }
         }
         return results;
+    }
+    private static string ImpactHash(IReadOnlyList<Impact> rows)
+    {
+        var canonical=string.Join("\n",rows.OrderBy(x=>x.DeviceId)
+            .Select(x=>x.DeviceId.ToString("N")+"|"+x.PinnedVersion+"|"+x.ProposedVersion+"|"+
+                string.Join(",",x.ChangedPaths.OrderBy(p=>p,StringComparer.Ordinal))+"|"+x.Blocker));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
     public async Task<PolicyTemplate> RequestPropagationAsync(Guid templateId,string actor,
         string reason,CancellationToken ct=default)
@@ -345,7 +358,8 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             throw new InvalidOperationException("Template impact has invalid effective configurations; resolve conflicts first.");
         var req=new PolicyTemplate {
             Name=RolloutKey(Guid.NewGuid()),Scope=RolloutScope,
-            NonSecretJson=Encode(new Rollout(templateId,template.Version,actor,reason,"PendingApproval",null,null)),
+            NonSecretJson=Encode(new Rollout(templateId,template.Version,actor,reason,
+                "PendingApproval",null,null,ImpactHash(impact))),
             CreatedBy=actor
         };
         db.PolicyTemplates.Add(req);
@@ -371,6 +385,10 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             ??throw new KeyNotFoundException("Catalog template retired or missing.");
         if(template.Version!=req.TargetVersion)
             throw new InvalidOperationException("Template changed after approval request; create a new impact assessment.");
+        var currentImpact=await ImpactAsync(req.TemplateId,ct);
+        if(!string.Equals(ImpactHash(currentImpact),req.ImpactSha256,StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Template rollout scope or settings changed after request; obtain a new impact approval.");
         if(req.State=="PendingApproval")
         {
             row.NonSecretJson=Encode(req with{State="PendingSecondApproval",FirstApprovedBy=actor});
@@ -379,7 +397,7 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
             await db.SaveChangesAsync(ct);
             return row;
         }
-        var impact=await ImpactAsync(req.TemplateId,ct);
+        var impact=currentImpact;
         if(impact.Any(x=>x.Blocker is not null))
             throw new InvalidOperationException("Current effective-policy impact contains conflicts; rollout blocked.");
         // The entire update affects SQL DESIRED version pins only: there are no device/API writes.
