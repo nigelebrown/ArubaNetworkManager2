@@ -20,7 +20,7 @@ public static class SiteConfigurationPolicy
     private static readonly HashSet<string> WirelessKeys = new(StringComparer.Ordinal) {
         "width24GhzMhz","width5GhzMhz","allowed5GhzChannels","dfsEnabled",
         "clientMatch","bandSteering","airtimeFairness","minTxPowerDbm","maxTxPowerDbm",
-        "wlanProfiles"
+        "rfPowerMode","fixedTxPowerDbm","wlanProfiles"
     };
     public static string Normalize(string text)
     {
@@ -155,8 +155,10 @@ public static class SiteConfigurationPolicy
             }
             return profiles;
         }
-        if(key is "minTxPowerDbm" or "maxTxPowerDbm")
+        if(key is "minTxPowerDbm" or "maxTxPowerDbm" or "fixedTxPowerDbm")
             return JsonValue.Create(Int(value,key,3,30))!;
+        if(key=="rfPowerMode")
+            return JsonValue.Create(Str(value,key,"arm","fixed"))!;
         if(key=="clientMatch")
             return JsonValue.Create(Str(value,key,"enabled","disabled"))!;
         if(key=="bandSteering")
@@ -179,6 +181,16 @@ public static class SiteConfigurationPolicy
             if(wlan["minTxPowerDbm"] is JsonNode min && wlan["maxTxPowerDbm"] is JsonNode max &&
                min.GetValue<int>()>max.GetValue<int>())
                 throw new ArgumentException("Minimum RF power exceeds maximum.");
+            var rfMode=wlan["rfPowerMode"]?.GetValue<string>();
+            var fixedValue=wlan["fixedTxPowerDbm"];
+            if(rfMode=="fixed"&&fixedValue is null)
+                throw new ArgumentException("Fixed RF power mode requires a fixedTxPowerDbm value.");
+            if(fixedValue is not null&&rfMode!="fixed")
+                throw new ArgumentException("Fixed transmit power requires explicit rfPowerMode=fixed.");
+            if(fixedValue is not null &&
+               ((wlan["minTxPowerDbm"] is JsonNode lo && fixedValue.GetValue<int>()<lo.GetValue<int>())||
+                (wlan["maxTxPowerDbm"] is JsonNode hi && fixedValue.GetValue<int>()>hi.GetValue<int>())))
+                throw new ArgumentException("Fixed RF power must remain inside the effective min/max power bounds.");
             if(wlan["width5GhzMhz"]?.GetValue<int>()==40 &&
                wlan["allowed5GhzChannels"] is JsonArray chs)
             {
