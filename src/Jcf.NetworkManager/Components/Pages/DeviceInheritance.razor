@@ -19,8 +19,8 @@
   <select @bind="templateId"><option value="">Choose approved baseline...</option>
    @foreach(var item in compatible)
    {
-    var d=TemplateCatalogService.ReadDefinition(item);
-    <option value="@item.Id.ToString()">@item.Name · v@item.Version · @d.DeviceKind @(d.AccessPorts?.ToString()??"AP")</option>
+    var definition=TemplateCatalogService.ReadDefinition(item);
+    <option value="@item.Id.ToString()">@item.Name · v@item.Version · @definition.DeviceKind @(definition.AccessPorts?.ToString()??"AP")</option>
    }
   </select></label>
  </div>
