@@ -164,6 +164,13 @@ builder.Services.AddScoped<AnalysisService>();
 builder.Services.AddScoped<ChangeWorkflowService>();
 builder.Services.AddScoped<CapabilityService>();
 builder.Services.AddScoped<EnterpriseOperationsService>();
+builder.Services.AddScoped<SiteConfigurationService>();
+builder.Services.AddScoped<TemplateCatalogService>();
+builder.Services.AddScoped<SiteWizardService>();
+builder.Services.AddScoped<ConfigurationImportService>();
+builder.Services.AddScoped<SwitchPortManagerService>();
+builder.Services.AddScoped<DeploymentPlanService>();
+builder.Services.AddScoped<ConfigurationVarianceService>();
 builder.Services.AddScoped<NetworkDiagnosticsService>();
 builder.Services.AddScoped<IncidentService>();
 builder.Services.AddScoped<AlertService>();
@@ -236,6 +243,34 @@ api.MapGet("/security/csrf",(HttpContext context,IAntiforgery antiforgery) => {
     var tokens=antiforgery.GetAndStoreTokens(context);
     return Results.Ok(new {header="X-CSRF-TOKEN",token=tokens.RequestToken});
 });
+// Operator-only non-secret configuration exports; no device adapters invoked.
+api.MapGet("/reports/variance/{siteId:guid}/{format}",
+    async(Guid siteId,string format,ConfigurationVarianceService variance,
+        IDbContextFactory<NetworkDbContext> dbf,CancellationToken ct)=>{
+        await using var db=await dbf.CreateDbContextAsync(ct);
+        if(!await db.Locations.AsNoTracking().AnyAsync(x=>x.Id==siteId,ct))
+            return Results.NotFound();
+        var report=await variance.BuildAsync(siteId,ct);
+        var stem="JCF-Variance-"+siteId.ToString("N");
+        return format.ToLowerInvariant() switch {
+            "csv"=>Results.File(VarianceExportService.Csv(report),"text/csv; charset=utf-8",stem+".csv"),
+            "xlsx"=>Results.File(VarianceExportService.Excel(report),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",stem+".xlsx"),
+            "pdf"=>Results.File(VarianceExportService.Pdf(report),"application/pdf",stem+".pdf"),
+            _=>Results.NotFound()
+        };
+    }).RequireAuthorization("Operator");
+api.MapGet("/switches/{deviceId:guid}/ports.csv",
+    async(Guid deviceId,SwitchPortManagerService ports,CancellationToken ct)=>{
+        try{
+            var rows=await ports.InventoryAsync(deviceId,ct);
+            var csv=SwitchPortManagerService.ExportCsv(
+                rows.Where(x=>x.Mapping is not null).Select(x=>x.Mapping!));
+            return Results.File(System.Text.Encoding.UTF8.GetBytes(csv),"text/csv; charset=utf-8",
+                "JCF-PortMapping-"+deviceId.ToString("N")+".csv");
+        }catch(KeyNotFoundException){return Results.NotFound();}
+        catch(ArgumentException){return Results.BadRequest();}
+    }).RequireAuthorization("Operator");
 api.MapGet("/devices",async(IDbContextFactory<NetworkDbContext> dbf)=>{
     await using var db=await dbf.CreateDbContextAsync();
     return await db.Devices.AsNoTracking().OrderBy(d=>d.Name).Select(d=>new {
@@ -285,6 +320,35 @@ api.MapGet("/alerts",async(IDbContextFactory<NetworkDbContext> dbf)=>{
     return await db.NetworkAlerts.AsNoTracking().OrderByDescending(x=>x.LastSeenUtc).Take(150).ToListAsync();
 });
 app.MapEnterpriseApis(identityEnabled:!demo);
+if(!demo)
+{
+    // Downloading a recoverable full configuration returns secrets; HTTPS, Admin RBAC,
+    // explicit audit reason, no-cache headers, and the original encrypted key ring are mandatory.
+    app.MapGet("/api/v1/recovery/{id:guid}/download",
+        async(Guid id,string? purpose,HttpContext context,ConfigurationImportService service,
+            System.Threading.CancellationToken ct)=>{
+            if(context.Request.Scheme!="https" || service.FullRecoveryRequiresTls)
+                return Results.Problem("Full recovery export requires HTTPS.",statusCode:403);
+            if(string.IsNullOrWhiteSpace(purpose) || purpose.Length<10)
+                return Results.BadRequest(new{error="An audited 10-character recovery purpose is required."});
+            var actor=context.User.Identity?.Name??"";
+            try
+            {
+                var recovered=await service.RecoverAsync(id,actor,purpose,ct);
+                context.Response.Headers.CacheControl="no-store";
+                context.Response.Headers.Pragma="no-cache";
+                context.Response.Headers["X-Content-Type-Options"]="nosniff";
+                var filename="JCF-Recovery-"+recovered.Manifest.DeviceId.ToString("N")+
+                    "-"+recovered.Manifest.Id.ToString("N")+".cfg";
+                return Results.File(recovered.RawBytes,"application/octet-stream",filename);
+            }
+            catch(KeyNotFoundException){return Results.NotFound();}
+            catch(InvalidOperationException){return Results.Problem(
+                "Recovery verification failed. Check encrypted backup storage and key ring.",
+                statusCode:409);}
+        }).RequireAuthorization("Admin");
+}
+
 api.MapGet("/radio-policy",()=>new {approvedWidthsMhz=NetworkChangePolicy.ApprovedWidthsMhz,
     permittedNonDfsChannels5Ghz=NetworkChangePolicy.PreferredNonDfs5GhzChannels,
     excludedDfsChannels5Ghz=NetworkChangePolicy.ExcludedDfs5GhzChannels});

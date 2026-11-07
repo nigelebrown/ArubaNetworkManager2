@@ -1,0 +1,38 @@
+# Native CentOS host Nginx owns 172.17.71.20:80. Docker app is loopback-only
+# on the host, so bridge port publishing never bypasses management-subnet filtering.
+# SQL Server stays external; all secrets are supplied as read-only bind files.
+name: jcf-network-manager
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: jcf/network-manager:v0.9.1-feature
+    user: "1654:1654"
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      JCF_CONFIG_FILE: /run/jcf-config/config.json
+      Jcf__Recovery__EncryptedBackupDirectory: /var/lib/jcf-backups
+    ports:
+      - "127.0.0.1:5182:8080"
+    volumes:
+      - "${JCF_CONFIG_DIRECTORY:?Set private Docker config directory}:/run/jcf-config:ro,z"
+      - "${JCF_KEYS_DIRECTORY:?Set original persistent ASP.NET Identity key ring}:/var/lib/jcf-keys:rw,z"
+      - "${JCF_BACKUP_DIRECTORY:?Set encrypted recovery vault directory}:/var/lib/jcf-backups:rw,z"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,uid=1654,gid=1654
+    pids_limit: 256
+    mem_limit: 2g
+    stop_grace_period: 45s
+    networks:
+      - jcf-mgmt
+networks:
+  jcf-mgmt:
+    driver: bridge

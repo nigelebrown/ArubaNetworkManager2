@@ -1,0 +1,189 @@
+@page "/port-manager"
+@attribute [Authorize]
+@inject SwitchPortManagerService Ports
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Visual Aruba CX Port Manager</h1>
+<p class="lede">Role-based port mapping and naming for CX 6100 and 6200, including 24- and 48-port variants and discovered uplink interfaces. Bulk edits and reusable profiles affect SQL desired state only.</p>
+<div class="banner">Interfaces marked EXPECTED have not yet been confirmed by device REST. LLDP-driven naming suggestions require manually confirmed evidence. Physical switch configuration is not changed from this page.</div>
+<section class="panel">
+ <div class="formgrid">
+  <label>Switch<select @bind="deviceId" @bind:after="ReloadPortsAsync">
+    <option value="">Choose switch...</option>
+    @foreach(var item in switches){<option value="@item.Id.ToString()">@item.Name — @item.Kind (@(item.IsSimulated?"SIMULATED":"REAL"))</option>}
+  </select></label>
+  <label>Selected interface<select @bind="portId" @bind:after="SelectedPortAsync">
+    <option value="">Select interface...</option>
+    @foreach(var item in inventory){<option value="@item.Port">@item.Port @(item.ExpectedOnly?"[EXPECTED]":"[OBSERVED]")</option>}
+  </select></label>
+ </div>
+ @if(inventory.Count==0){<p class="muted">No port records. Assign this CX as 24/48-port in Site Configuration, then probe read-only interfaces for actual identifiers.</p>}
+ else{
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:6px;margin:14px 0;">
+  @foreach(var p in inventory){
+    <button class="secondary" style="padding:8px;min-height:65px" @onclick="()=>SelectAsync(p.Port)">
+      <b>@p.Port</b>
+      <small style="display:block;">@(p.ExpectedOnly?"EXPECTED":"OBSERVED")</small>
+      <small style="display:block;">@(p.LinkState??"Link unknown")</small>
+    </button>
+  }
+  </div>
+ }
+ @if(Current is { } port){
+ <h3>Port @port.Port</h3>
+ <table><tbody>
+ <tr><th>Inventory evidence</th><td>@(port.Discovered?"Discovered interface":"Operator-declared 24/48 placeholder")</td></tr>
+ <tr><th>Link status</th><td>@(port.LinkState??"Unknown")</td></tr>
+ <tr><th>Observed native/access VLAN</th><td>@(port.Readback?.NativeOrAccessVlan?.ToString()??"Unknown")</td></tr>
+ <tr><th>Observed tagged VLANs</th><td>@(port.Readback?.TaggedVlans is null?"Unknown":string.Join(", ",port.Readback.TaggedVlans))</td></tr>
+ <tr><th>Utilization</th><td>@(port.UtilizationPct?.ToString()??"Unknown")%</td></tr>
+ <tr><th>PoE consumption</th><td>@(port.PoeWatts?.ToString()??"Unknown") W</td></tr>
+ <tr><th>Receive/transmit errors</th><td>@(port.RxErrors?.ToString()??"Unknown") / @(port.TxErrors?.ToString()??"Unknown")</td></tr>
+ <tr><th>LLDP neighbor</th><td>@(port.NeighborName??"Unknown") · @(port.NeighborPort??"port unknown") · @port.Evidence</td></tr>
+ <tr><th>Current desired name</th><td>@(port.Mapping?.DisplayName??"Inherit default")</td></tr>
+ <tr><th>Suggested name</th><td>@(port.SuggestedName??"Not available: confirm LLDP first")</td></tr>
+ </tbody></table>
+ }
+</section>
+<section class="panel">
+ <h2>Suggest, rename and apply port profile</h2>
+ <div class="formgrid">
+ <label>Friendly port name<input @bind="displayName" maxlength="64" placeholder="AP-RECEPTION-01"/></label>
+ <label>Role<select @bind="role"><option>UPLINK</option><option>AP</option><option>DATA</option><option>VOICE</option><option>PRINTER</option><option>CAMERA</option><option>SPARE</option></select></label>
+ <label>Reusable role profile<select @bind="profileName"><option value="">No profile assigned</option>
+ @foreach(var p in profiles){<option value="@p.Name">@p.Name (@p.Mode)</option>}</select></label>
+ <label>Reason<input @bind="reason" maxlength="180"/></label>
+ </div>
+ <div class="actionbar">
+ <button class="secondary" @onclick="SuggestAsync">Use confirmed LLDP suggestion</button>
+ @if(isOperator){
+ <button @onclick="SavePortAsync">Save desired name/profile</button>
+ <button class="secondary" @onclick="ResetAsync">Reset to inherited/default name</button>}
+ </div>
+ <p class="muted">Example names: UPLINK-TO-SW02, AP-RECEPTION-01, DATA-ADMIN-01, VOICE-OPERATIONS-01, PRINTER-GENOFFICE-01, CAMERA-ENTRANCE-01, SPARE.</p>
+</section>
+<section class="panel">
+ <h2>Reusable port-role profiles</h2>
+ <div class="formgrid">
+ <label>Profile name<input @bind="newProfileName" maxlength="64" placeholder="AP-ACCESS"/></label>
+ <label>Role<select @bind="newProfileRole"><option>AP</option><option>UPLINK</option><option>DATA</option><option>VOICE</option><option>PRINTER</option><option>CAMERA</option><option>SPARE</option></select></label>
+ <label>Mode<select @bind="newProfileMode"><option value="access">Access VLAN</option><option value="trunk">Trunk VLAN list</option></select></label>
+ <label>Access VLAN<input type="number" @bind="accessVlan" min="2" max="4094"/></label>
+ <label>Trunk native VLAN<input type="number" @bind="nativeVlan" min="2" max="4094"/></label>
+ <label>Trunk allowed VLAN IDs<input @bind="trunkVlans" placeholder="100,200,300"/></label>
+ <label>PoE policy<select @bind="poeMode"><option value="inherit-device">Inherit device</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label>
+ <label>LLDP mode<select @bind="lldpMode"><option value="tx-rx">Transmit/receive</option><option value="tx-only">Transmit only</option><option value="rx-only">Receive only</option><option value="disabled">Disabled</option></select></label>
+ </div>
+ @if(isOperator){<button class="secondary" @onclick="SaveProfileAsync">Create or revise desired port profile</button>}
+ <p class="muted">PoE capability, actual speed and power limits remain unknown until exact switch SKU/firmware verification. Port profiles are not applied to physical equipment here.</p>
+</section>
+<section class="panel">
+ <h2>Bulk port naming and CSV mapping</h2>
+ <label>Paste CSV containing columns Port,DisplayName,Role,ProfileName
+ <textarea @bind="csvText" rows="9" spellcheck="false"></textarea></label>
+ <div class="actionbar">
+ <button class="secondary" @onclick="PreviewCsvAsync">Validate CSV</button>
+ @if(isOperator){<button @onclick="SaveCsvAsync">Save all desired port mappings</button>}
+ @if(Guid.TryParse(deviceId,out var selectedId)){<a href="@($"/api/v1/switches/{selectedId}/ports.csv")">Download CSV</a>}
+ </div>
+ @if(csvPreview.Count>0){<p><b>Preview:</b> @csvPreview.Count valid rows — no device writes.</p>
+ <table><thead><tr><th>Port</th><th>Name</th><th>Role</th><th>Profile</th></tr></thead><tbody>
+ @foreach(var row in csvPreview.Take(12)){
+ <tr><td>@row.Port</td><td>@row.DisplayName</td><td>@row.Role</td><td>@row.ProfileName</td></tr>
+ }</tbody></table>}
+ <p class="muted">CSV is supported for import/export in this sprint; XLSX export is available from the configuration reporting module.</p>
+</section>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+@code{
+ private List<Device> switches=new();
+ private List<SwitchPortManagerService.PortView> inventory=new();
+ private List<SwitchPortManagerService.Profile> profiles=new();
+ private List<SwitchPortManagerService.BulkItem> csvPreview=new();
+ private string deviceId="",portId="",displayName="",role="AP",profileName="",
+    reason="Port mapping documented during network site onboarding",
+    newProfileName="",newProfileRole="AP",newProfileMode="access",
+    poeMode="inherit-device",lldpMode="tx-rx",trunkVlans="100,200,300",
+    csvText="Port,DisplayName,Role,ProfileName\n1/1/1,AP-RECEPTION-01,AP,",
+    message="";
+ private int accessVlan=100,nativeVlan=100;
+ private bool isOperator,error;
+ private SwitchPortManagerService.PortView? Current=>inventory.FirstOrDefault(x=>x.Port==portId);
+ protected override async Task OnInitializedAsync(){
+  isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  await using(var db=await DbFactory.CreateDbContextAsync()){
+   switches=await db.Devices.AsNoTracking().Where(x=>x.Kind==DeviceKind.Cx6100||x.Kind==DeviceKind.Cx6200)
+    .OrderBy(x=>x.Name).ToListAsync();
+  }
+  profiles=(await Ports.ProfilesAsync()).ToList();
+  if(switches.Count>0)deviceId=switches[0].Id.ToString();
+  await ReloadPortsAsync();
+ }
+ private async Task ReloadPortsAsync(){
+  inventory=new();
+  if(!Guid.TryParse(deviceId,out var id))return;
+  try{inventory=(await Ports.InventoryAsync(id)).ToList();
+    if(!inventory.Any(x=>x.Port==portId))portId=inventory.FirstOrDefault()?.Port??"";
+    await SelectedPortAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private Task SelectAsync(string name){portId=name;return SelectedPortAsync();}
+ private Task SelectedPortAsync(){
+  if(Current is { } p){
+   displayName=p.Mapping?.DisplayName??"";role=p.Mapping?.Role??"AP";profileName=p.Mapping?.ProfileName??"";
+  }
+  return Task.CompletedTask;
+ }
+ private Task SuggestAsync(){
+  if(Current?.SuggestedName is string label){displayName=label;message="LLDP-confirmed naming suggestion selected. Save to record it.";error=false;}
+  else{message="No confirmed LLDP neighbor for this port; manual operator naming required.";error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SavePortAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+   if(!Guid.TryParse(deviceId,out var id))throw new ArgumentException("Select switch.");
+   await Ports.SaveBulkAsync(id,new[]{new SwitchPortManagerService.BulkItem(portId,displayName,role,profileName)},
+     user.Identity?.Name??"",reason);
+   message="Port naming/profile saved as desired state; no switch write executed.";error=false;await ReloadPortsAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task ResetAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+   if(!Guid.TryParse(deviceId,out var id))throw new ArgumentException("Select switch.");
+   await Ports.ResetAsync(id,portId,user.Identity?.Name??"",reason);
+   message="Port-specific override retired, history retained. No switch write.";error=false;await ReloadPortsAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SaveProfileAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+   var allowed=trunkVlans.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
+      .Select(int.Parse).ToArray();
+   var p=new SwitchPortManagerService.Profile(newProfileName,newProfileRole,newProfileMode,
+    newProfileMode=="access"?accessVlan:null,
+    newProfileMode=="trunk"?nativeVlan:null,
+    newProfileMode=="trunk"?allowed:Array.Empty<int>(),poeMode,lldpMode);
+   await Ports.SaveProfileAsync(p,user.Identity?.Name??"",reason);
+   profiles=(await Ports.ProfilesAsync()).ToList();
+   message="Port role profile saved in SQL; no live port changes.";error=false;
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private Task PreviewCsvAsync(){
+  try{csvPreview=SwitchPortManagerService.ImportCsv(csvText).ToList();
+   message="CSV parsed; physical port coverage checked on save.";error=false;
+  }catch(Exception ex){csvPreview=new();message=ex.Message;error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SaveCsvAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+   if(!Guid.TryParse(deviceId,out var id))throw new ArgumentException("Choose switch.");
+   var values=SwitchPortManagerService.ImportCsv(csvText);
+   await Ports.SaveBulkAsync(id,values,user.Identity?.Name??"",reason);
+   message="Bulk port mapping saved and audited; no physical configuration written.";error=false;
+   await ReloadPortsAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+}

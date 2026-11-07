@@ -1,0 +1,191 @@
+@page "/switch-configuration"
+@attribute [Authorize]
+@using System.Text.Json
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject ChangeWorkflowService Changes
+@inject SiteConfigurationService SiteService
+@inject AuthenticationStateProvider Authentication
+
+<h1>Aruba CX Switch Configuration</h1>
+<p class="lede">Plan and review CX 6100/6200 switch configuration for 24-port and 48-port models. Inherit the approved site/global network policy, then prepare port-specific changes for independent approval.</p>
+<div class="banner">New trunk, LACP, LLDP, port administration and PoE-priority actions are <strong>proposal-only on physical switches</strong>. Do not assume a switch port is safe to change because its number is present. Probe exact interfaces and uplinks, verify management-path impact, and certify readback/rollback before enabling physical changes. Simulated execution never contacts real hardware.</div>
+<section class="panel">
+ <h2>Switch selection and inherited policy</h2>
+ <div class="formgrid">
+  <label>Switch
+   <select @bind="selectedSwitch" @bind:after="LoadSelectedAsync">
+    <option value="">Select CX switch...</option>
+    @foreach(var d in switches){<option value="@d.Id.ToString()">@d.Name · @d.Kind @(d.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+   </select>
+  </label>
+  <label>Proposed action
+   <select @bind="action">
+    <option value="PlanCxTrunk">Explicit VLAN trunk and native VLAN</option>
+    <option value="PlanCxPortAdmin">Port administration and description</option>
+    <option value="PlanCxLag">LACP aggregation (LAG)</option>
+    <option value="PlanCxLldp">LLDP transmit/receive control</option>
+    <option value="PlanCxPoePolicy">PoE priority and power budget limit</option>
+   </select>
+  </label>
+ </div>
+ @if(Target is Device device)
+ {
+  <p><b>@device.Name</b> · @device.Kind · @device.ManagementIp · @(device.Firmware??"Firmware unknown") · @(device.IsSimulated?"SIMULATED":"REAL")</p>
+  <p><b>Declared chassis:</b> @(physicalPorts??"24/48-port form factor not recorded") · <b>Site:</b> @(locations.GetValueOrDefault(device.LocationId??Guid.Empty)??"Not assigned")</p>
+  @if(site is not null)
+  {
+   <p><b>Global inherited:</b> @site.GlobalName v@site.GlobalVersion · Site override v@site.SiteVersion</p>
+   <details><summary>View effective desired site configuration (not running configuration)</summary>
+    <pre><code>@Format(site.EffectiveJson)</code></pre>
+   </details>
+  }else{
+   <p class="muted">No site configuration group resolved. Configure the inheritance and assign the device under <a href="/site-configuration">Global → Site Configuration Groups</a>.</p>
+  }
+  <p><b>Last known link:</b> @(Target.LastStatus) · Interfaces collected: @latestPorts.Count · Latest sample @(latestPorts.Count>0?latestPorts.Max(p=>p.AtUtc).ToString("u"):"none")</p>
+ }
+</section>
+<section class="panel">
+ <h2>Prepare switch configuration proposal</h2>
+ <div class="formgrid">
+ @if(action is "PlanCxTrunk" or "PlanCxPortAdmin" or "PlanCxLldp" or "PlanCxPoePolicy"){
+  <label>Physical interface<input @bind="port" placeholder="1/1/1" maxlength="20" /></label>
+ }
+ @if(action=="PlanCxTrunk" || action=="PlanCxLag"){
+  <label>Native VLAN ID<input type="number" @bind="nativeVlan" min="2" max="4094" /></label>
+  <label>Explicit tagged + native VLAN list (CSV)<input @bind="allowedVlans" maxlength="200" placeholder="100,200,300" /></label>
+  <p class="muted">The native VLAN must be included. Changes that remove critical trunk VLANs can disrupt management, voice and AP connectivity. Full trunk readback and a tested rollback are still required.</p>
+ }
+ @if(action=="PlanCxPortAdmin"){
+  <label>Administrative state<select @bind="portState"><option value="up">Up</option><option value="down">Down</option></select></label>
+  <label>Port description<input @bind="description" maxlength="64" placeholder="Staff access / Reception" /></label>
+ }
+ @if(action=="PlanCxLag"){
+  <label>LAG ID<input type="number" @bind="lagId" min="1" max="32" /></label>
+  <label>LACP negotiation<select @bind="lacpMode"><option value="active">Active</option><option value="passive">Passive</option></select></label>
+  <label>Member ports (CSV)<input @bind="members" maxlength="100" placeholder="1/1/23,1/1/24" /></label>
+ }
+ @if(action=="PlanCxLldp"){
+  <label>LLDP administrative mode<select @bind="lldpMode"><option value="tx-rx">Transmit + receive</option><option value="tx-only">Transmit only</option><option value="rx-only">Receive only</option><option value="disabled">Disabled</option></select></label>
+ }
+ @if(action=="PlanCxPoePolicy"){
+  <label>PoE priority<select @bind="poePriority"><option value="low">Low</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+  <label>Proposed power cap (W)<input type="number" @bind="powerLimitWatts" min="1" max="90" /></label>
+  <p class="muted">The presence of PoE and the port's IEEE power class must be verified from the exact CX SKU. A 90 W plan is not proof that this model can supply 90 W.</p>
+ }
+ @if(action is "PlanCxTrunk" or "PlanCxLag" or "PlanCxPortAdmin"){
+  <label>Service impact reviewed<select @bind="impactAcknowledged"><option value="false">No — proposal may be rejected</option><option value="true">Yes — uplink and rollback assessed</option></select></label>
+ }
+ <label>Operational justification and maintenance window<input @bind="reason" maxlength="300" placeholder="Reason, impact, approved window and rollback plan" /></label>
+ </div>
+ <div class="actionbar">
+  <button class="secondary" @onclick="PreviewAsync">Validate and preview</button>
+  @if(isOperator){<button @onclick="SubmitAsync">Submit for two independent approvals</button>}
+ </div>
+ @if(!string.IsNullOrWhiteSpace(message)){<p class="feedback @(error?"error":"")">@message</p>}
+ @if(!string.IsNullOrWhiteSpace(preview)){<h3>Canonical, non-secret proposal</h3><pre><code>@preview</code></pre>}
+ <p>Current approval queue: <a href="/changes">Change board</a> · Site/network standards: <a href="/site-configuration">Global → Site configuration</a></p>
+</section>
+<section class="panel">
+<h2>Recently requested switch changes</h2>
+@if(proposals.Count==0){<p class="muted">No CX planning proposals yet.</p>}
+else{
+<table><thead><tr><th>UTC</th><th>Switch</th><th>Action</th><th>State</th><th>Requester</th></tr></thead><tbody>
+@foreach(var p in proposals){<tr><td>@p.RequestedUtc.ToString("MM-dd HH:mm")</td><td>@(switches.FirstOrDefault(x=>x.Id==p.DeviceId)?.Name??"Removed")</td><td>@p.Action</td><td>@p.State</td><td>@p.RequestedBy</td></tr>}
+</tbody></table>
+}
+</section>
+@code {
+ private List<Device> switches=new();
+ private List<ConfigProposal> proposals=new();
+ private List<PortObservation> latestPorts=new();
+ private Dictionary<Guid,string> locations=new();
+ private SiteConfigurationService.EffectiveSite? site;
+ private string selectedSwitch="",action="PlanCxTrunk",port="1/1/1",
+   allowedVlans="100,200,300",portState="up",description="",
+   members="1/1/23,1/1/24",lacpMode="active",lldpMode="tx-rx",
+   poePriority="high",impactAcknowledged="false",reason="Maintenance window / change impact review",
+   preview="",message="";
+ private int nativeVlan=100,lagId=1,powerLimitWatts=30;
+ private string? physicalPorts;
+ private bool isOperator,error;
+ private Device? Target=>Guid.TryParse(selectedSwitch,out var id)?
+   switches.FirstOrDefault(x=>x.Id==id):null;
+ protected override async Task OnInitializedAsync()
+ {
+  isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  await using var db=await DbFactory.CreateDbContextAsync();
+  switches=await db.Devices.AsNoTracking().Where(x=>x.Kind==DeviceKind.Cx6100||x.Kind==DeviceKind.Cx6200).OrderBy(x=>x.Name).ToListAsync();
+  locations=(await db.Locations.AsNoTracking().ToListAsync()).ToDictionary(x=>x.Id,x=>x.Name);
+  proposals=await db.ConfigProposals.AsNoTracking()
+    .Where(x=>x.Action==ConfigAction.PlanCxTrunk||x.Action==ConfigAction.PlanCxPortAdmin||
+      x.Action==ConfigAction.PlanCxLag||x.Action==ConfigAction.PlanCxLldp||x.Action==ConfigAction.PlanCxPoePolicy)
+    .OrderByDescending(x=>x.RequestedUtc).Take(35).ToListAsync();
+  if(switches.Count>0)selectedSwitch=switches[0].Id.ToString();
+  await LoadSelectedAsync();
+ }
+ private async Task LoadSelectedAsync()
+ {
+  site=null;physicalPorts=null;latestPorts=new();
+  if(Target is not Device d)return;
+  if(d.LocationId is Guid id)
+  {
+   try{site=await SiteService.ResolveSiteAsync(id);}
+   catch(KeyNotFoundException) { }
+  }
+  await using var db=await DbFactory.CreateDbContextAsync();
+  physicalPorts=(await db.DeviceCapabilities.AsNoTracking()
+      .Where(x=>x.DeviceId==d.Id&&x.Operation==SiteConfigurationService.PortCountOperation)
+      .Select(x=>x.EvidenceReference).FirstOrDefaultAsync())?.Replace("operator-declared:","")+" (declared)";
+  var observations=await db.PortObservations.AsNoTracking()
+      .Where(x=>x.DeviceId==d.Id).OrderByDescending(x=>x.AtUtc).Take(150).ToListAsync();
+  latestPorts=observations.GroupBy(x=>x.Port).Select(g=>g.First()).ToList();
+ }
+ private string Build()
+ {
+  var type=Enum.Parse<ConfigAction>(action);
+  if(!SwitchConfigPolicy.IsPlanned(type))throw new ArgumentException("Unsupported switch action.");
+  int[] Vlans()=>allowedVlans.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
+   .Select(int.Parse).ToArray();
+  string[] Members()=>members.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).ToArray();
+  object body=type switch {
+   ConfigAction.PlanCxTrunk=>new {port,nativeVlan,allowedVlans=Vlans(),impactAcknowledged=impactAcknowledged=="true"},
+   ConfigAction.PlanCxPortAdmin=>new {port,state=portState,description,impactAcknowledged=impactAcknowledged=="true"},
+   ConfigAction.PlanCxLag=>new {lagId,lacpMode,members=Members(),nativeVlan,allowedVlans=Vlans(),impactAcknowledged=impactAcknowledged=="true"},
+   ConfigAction.PlanCxLldp=>new {port,adminMode=lldpMode},
+   ConfigAction.PlanCxPoePolicy=>new {port,priority=poePriority,powerLimitWatts},
+   _=>throw new InvalidOperationException()
+  };
+  var json=SwitchConfigPolicy.Normalize(type,JsonSerializer.Serialize(body));
+  if(Target is not Device device)throw new ArgumentException("Select a CX switch.");
+  SwitchConfigPolicy.CheckTarget(device,type,json);
+  return json;
+ }
+ private Task PreviewAsync()
+ {
+  try{preview=Format(Build());message="Switch plan validated. No device contacted or changed.";error=false;}
+  catch(Exception ex){preview="";message=ex.Message;error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SubmitAsync()
+ {
+  try {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireOperator(principal);
+   if(Target is not Device d)throw new ArgumentException("Select a registered CX switch.");
+   if(reason.Trim().Length<10)throw new ArgumentException("Provide a maintenance justification of at least 10 characters.");
+   var canonical=Build();
+   var type=Enum.Parse<ConfigAction>(action);
+   var request=await Changes.SubmitAsync(d.Id,type,canonical,principal.Identity?.Name??"",reason);
+   preview=Format(canonical);
+   message="Switch proposal "+request.Id+" stored in SQL; two independent approvers required. No device settings changed.";
+   error=false;
+   await LoadSelectedAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string Format(string json)
+ {
+  using var j=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(j.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}

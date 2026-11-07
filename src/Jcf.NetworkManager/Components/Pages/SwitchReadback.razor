@@ -1,0 +1,158 @@
+@page "/switch-readback"
+@attribute [Authorize]
+@using System.Text.Json
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject DeviceService Devices
+@inject SiteConfigurationService Sites
+@inject AuthenticationStateProvider Authentication
+
+<h1>CX Switch Readback &amp; Site Compliance</h1>
+<p class="lede">Read and review live, non-secret port VLAN and trunk state from Aruba CX 6100/6200 (24/48-port) switches. Compare readback against the site's inherited global configuration policy. No configuration write commands are used.</p>
+<div class="banner">Uncertified AOS-CX REST readback is informational, not proof of compliance. Device firmware and SKU may vary; absent values mean unknown. No passwords, login URIs or full REST configuration responses are retained. Only operator-authorized read-only polling is available.</div>
+<section class="panel">
+ <h2>Switch</h2>
+ <div class="formgrid">
+  <label>Select switch
+   <select @bind="deviceId" @bind:after="LoadSelectedAsync">
+    <option value="">Choose switch...</option>
+    @foreach(var item in devices){<option value="@item.Id.ToString()">@item.Name · @item.Kind @(item.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+   </select>
+  </label>
+ </div>
+ <div class="actionbar">
+  <button class="secondary" disabled="@busy" @onclick="LoadSelectedAsync">Refresh SQL evidence</button>
+  @if(selected is {IsSimulated:false} && isOperator)
+  {<button disabled="@busy" @onclick="ProbeAsync">Read switch now (GET only)</button>}
+ </div>
+ @if(!string.IsNullOrEmpty(message)){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+</section>
+@if(selected is Device d)
+{
+ <section class="panel">
+  <h2>@d.Name</h2>
+  <p>@d.Kind · @d.ManagementIp · Firmware @(d.Firmware??"Unknown") · Status @d.LastStatus</p>
+  <p><b>Site:</b> @(locations.GetValueOrDefault(d.LocationId??Guid.Empty)??"Unassigned") ·
+     <b>Chassis:</b> @(physicalPorts??"Not declared (24/48 required)")</p>
+  @if(d.IsSimulated)
+  {
+   <p class="muted">This is a simulated CX switch; no real REST call will be made. Use <a href="/switch-configuration">CX Switch Configuration</a> to create and approve test proposals, and <a href="/site-configuration">Global → Site Configuration</a> to assign the device.</p>
+  }
+  else if(snapshot is null)
+  {<p class="muted">No sanitized port/VLAN readback has been captured. This does not imply that the switch has no configured ports. Probe the device using approved management access.</p>}
+  else
+  {
+   <p><b>Readback collected:</b> @snapshot.CapturedUtc.ToString("u") · Firmware @snapshot.Firmware ·
+   @(DateTime.UtcNow-snapshot.CapturedUtc>TimeSpan.FromHours(24)?"STALE (older than 24 hours)":"Recent saved snapshot")</p>
+   <p class="muted">AOS-CX REST version/SKU semantics still require physical device acceptance.</p>
+   <h3>Switch interface configuration (@interfaces.Count)</h3>
+   @if(interfaces.Count==0){<p class="muted">Stored snapshot is not in the expected safe projection format.</p>}
+   else {
+    <table><thead><tr><th>Interface</th><th>Mode</th><th>Native/access VLAN</th><th>Tagged VLANs</th><th>Admin</th><th>Link</th><th>Description</th></tr></thead><tbody>
+    @foreach(var p in interfaces)
+    {
+      <tr><td>@p.Port</td><td>@(p.Mode??"Unknown")</td><td>@(p.NativeOrAccessVlan?.ToString()??"Unknown")</td>
+       <td>@(p.TaggedVlans is null?"Unknown":p.TaggedVlans.Count==0?"Explicitly empty":string.Join(", ",p.TaggedVlans))</td>
+       <td>@(p.AdminState??"Unknown")</td><td>@(p.LinkState??"Unknown")</td><td>@(p.Description??"Not recorded")</td></tr>
+    }
+    </tbody></table>
+   }
+  }
+ </section>
+ <section class="panel">
+  <h2>Inherited site policy and findings</h2>
+  @if(effective is null)
+  {<p class="muted">No site/global configuration assigned. Open <a href="/site-configuration">Global → Site Configuration</a> to link this switch to an inherited group.</p>}
+  else {
+   <p>Inherited from <b>@effective.GlobalName</b> v@effective.GlobalVersion, site override v@effective.SiteVersion. These are desired network settings, not the device's running configuration.</p>
+   <details><summary>Show effective desired site configuration</summary><pre><code>@Format(effective.EffectiveJson)</code></pre></details>
+  }
+  @if(effective is not null && interfaces.Count>0)
+  {
+   <h3>Advisory VLAN mapping review</h3>
+   @if(findings.Count==0){<p class="muted">No discrepancies were found in known interface VLAN values. Missing fields remain unverified; this is not a compliance certificate.</p>}
+   else {
+    <table><thead><tr><th>Port</th><th>Rule</th><th>Priority</th><th>Finding</th></tr></thead><tbody>
+     @foreach(var f in findings){<tr><td>@f.Port</td><td>@f.Rule</td><td>@f.Severity</td><td>@f.Explanation</td></tr>}
+    </tbody></table>
+   }
+  }
+  <p>Submit remediation proposals via <a href="/switch-configuration">CX Switch Configuration</a> and <a href="/changes">Change approvals</a>. Physical writes remain blocked for unverified new actions.</p>
+ </section>
+}
+@code {
+ private List<Device> devices=new();
+ private Dictionary<Guid,string> locations=new();
+ private List<CxSwitchReadback.Interface> interfaces=new();
+ private List<CxConfigurationReview.Finding> findings=new();
+ private ConfigurationSnapshot? snapshot;
+ private Device? selected;
+ private SiteConfigurationService.EffectiveSite? effective;
+ private string deviceId="",message="";
+ private string? physicalPorts;
+ private bool isOperator,busy,error;
+ protected override async Task OnInitializedAsync()
+ {
+  isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  await using var db=await DbFactory.CreateDbContextAsync();
+  devices=await db.Devices.AsNoTracking().Where(x=>x.Kind==DeviceKind.Cx6100||x.Kind==DeviceKind.Cx6200).OrderBy(x=>x.Name).ToListAsync();
+  locations=(await db.Locations.AsNoTracking().ToListAsync()).ToDictionary(x=>x.Id,x=>x.Name);
+  if(devices.Count>0)deviceId=devices[0].Id.ToString();
+  await LoadSelectedAsync();
+ }
+ private async Task LoadSelectedAsync()
+ {
+  selected=Guid.TryParse(deviceId,out var id)?devices.FirstOrDefault(x=>x.Id==id):null;
+  snapshot=null;effective=null;physicalPorts=null;interfaces=new();findings=new();
+  if(selected is not Device d)return;
+  await using var db=await DbFactory.CreateDbContextAsync();
+  snapshot=await db.ConfigurationSnapshots.AsNoTracking()
+   .Where(x=>x.DeviceId==d.Id && x.CapturedBy=="cx-interface-readonly")
+   .OrderByDescending(x=>x.CapturedUtc).FirstOrDefaultAsync();
+  physicalPorts=(await db.DeviceCapabilities.AsNoTracking()
+   .Where(x=>x.DeviceId==d.Id&&x.Operation==SiteConfigurationService.PortCountOperation)
+   .Select(x=>x.EvidenceReference).FirstOrDefaultAsync())?.Replace("operator-declared:","")+" (declared)";
+  if(snapshot is not null)
+  {
+   try{
+    using var doc=JsonDocument.Parse(snapshot.SanitizedJson);
+    if(doc.RootElement.GetProperty("schema").GetString()=="cx-interface-readback/v1")
+       interfaces=doc.RootElement.GetProperty("interfaces").Deserialize<List<CxSwitchReadback.Interface>>()??new();
+   }catch(JsonException){interfaces=new();}
+    catch(KeyNotFoundException){interfaces=new();}
+  }
+  if(d.LocationId is Guid locationId)
+  {
+   try{effective=await Sites.ResolveSiteAsync(locationId);}
+   catch(KeyNotFoundException) {}
+   catch(InvalidOperationException) {}
+  }
+  if(effective is not null && interfaces.Count>0)
+  {
+   try{findings=CxConfigurationReview.Compare(effective.EffectiveJson,interfaces).ToList();}
+   catch(ArgumentException){findings=new();}
+  }
+ }
+ private async Task ProbeAsync()
+ {
+  if(busy || selected is not Device d || d.IsSimulated)return;
+  busy=true;
+  try
+  {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireOperator(principal);
+   var result=await Devices.ProbeAsync(d.Id,principal.Identity?.Name??"operator");
+   message=result.Connected
+      ?"Read-only CX probe completed. Config projection: "+(result.CxReadback?.Status??"Unavailable")+". No switch changes made."
+      :"REST probe unavailable; check routing, certificate pin, credentials and REST read access.";
+   error=!result.Connected;
+   await LoadSelectedAsync();
+  }
+  catch(Exception ex){message="Switch read failed: "+ex.GetType().Name;error=true;}
+  finally{busy=false;}
+ }
+ private static string Format(string json)
+ {
+  using var doc=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(doc.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}

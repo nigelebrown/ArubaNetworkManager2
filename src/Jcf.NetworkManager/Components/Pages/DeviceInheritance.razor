@@ -1,0 +1,160 @@
+@page "/device-inheritance"
+@attribute [Authorize]
+@using System.Text.Json
+@inject TemplateCatalogService Catalog
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Device Template Assignment &amp; Configuration Variance</h1>
+<p class="lede">Choose a different global template for every CX switch or Aruba Instant AP, even at the same JCF site. Inspect effective settings with per-property G/S/D/O origin, revision, actor and approval reference.</p>
+<div class="banner">The effective state shown is <strong>desired configuration</strong> only. It is not running configuration, does not certify firmware support, and is never deployed automatically. Optimization overrides must reference an independently approved recommendation.</div>
+<section class="panel">
+ <h2>1. Select site device and global template</h2>
+ <div class="formgrid">
+  <label>Registered AP or switch
+  <select @bind="deviceId" @bind:after="LoadDeviceAsync"><option value="">Choose device...</option>
+   @foreach(var item in devices){<option value="@item.Id.ToString()">@item.Name — @item.Kind — @(locations.GetValueOrDefault(item.LocationId??Guid.Empty)??"Unassigned")</option>}
+  </select></label>
+  <label>Compatible global template
+  <select @bind="templateId"><option value="">Choose approved baseline...</option>
+   @foreach(var item in compatible)
+   {
+    var definition=TemplateCatalogService.ReadDefinition(item);
+    <option value="@item.Id.ToString()">@item.Name · v@item.Version · @definition.DeviceKind @(definition.AccessPorts?.ToString()??"AP")</option>
+   }
+  </select></label>
+ </div>
+ @if(selected is Device d)
+ {
+  <p><b>@d.Name</b> · @d.Kind · @d.ManagementIp · @(d.IsSimulated?"SIMULATED device":"REAL hardware")
+    · <b>Site:</b> @(locations.GetValueOrDefault(d.LocationId??Guid.Empty)??"No site assigned")</p>
+  @if(!d.IsAccessPoint){<p><b>Chassis:</b> @(devicePorts?.ToString()??"24/48 port count not declared"); create site placement first under <a href="/site-configuration">Site Configuration</a>.</p>}
+ }
+ <label>Change justification<input @bind="reason" maxlength="180" placeholder="Approved operational reason, site ticket and desired configuration variance"/></label>
+ @if(isOperator){<button @onclick="AssignAsync">Pin selected global template to this device</button>}
+</section>
+<section class="panel">
+ <h2>2. Device-specific non-secret overrides</h2>
+ <p class="muted">A device can override allowed values independently of other devices at its site. Global mandatory security settings remain locked. Arrays are fully replaced, not merged. Overrides are versioned in SQL history and require future deployment review.</p>
+ <label>Device override JSON<textarea rows="7" spellcheck="false" @bind="deviceOverrides"></textarea></label>
+ @if(isOperator){<button class="secondary" @onclick="SaveDeviceOverrideAsync">Save device-specific desired override</button>}
+ <h3>Approved optimization override</h3>
+ <div class="formgrid">
+  <label>Independently approved recommendation
+   <select @bind="recommendationId"><option value="">Choose an approved device recommendation...</option>
+   @foreach(var r in approvedRecommendations){<option value="@r.Id.ToString()">@r.Title · reviewed by @(r.ReviewedBy??"unknown")</option>}</select>
+  </label>
+ </div>
+ <label>Approved optimization settings JSON<textarea rows="5" spellcheck="false" @bind="optimizationOverrides"></textarea></label>
+ @if(isOperator){<button class="secondary" @onclick="SaveOptimizationAsync">Record approved optimization as desired override</button>}
+</section>
+<section class="panel">
+ <h2>3. Effective desired settings and provenance</h2>
+ <button class="secondary" @onclick="LoadDeviceAsync">Refresh effective configuration</button>
+ @if(effective is null){<p class="muted">Assign an approved compatible template to this device. Effective settings are unavailable until a version is pinned.</p>}
+ else
+ {
+  <p><b>Template:</b> @effective.Template.Name · pinned v@effective.Binding.PinnedVersion
+    · <b>Site:</b> @(effective.SiteName??"Unknown") · <b>Overrides:</b> @effective.Resolved.OverriddenPaths.Count</p>
+  <details><summary>View resolved desired configuration JSON</summary><pre><code>@Format(effective.Resolved.DesiredJson)</code></pre></details>
+  <table><thead><tr><th>Setting</th><th>Desired value</th><th>Source</th><th>Version</th><th>Author</th><th>Reason</th><th>Approval</th></tr></thead><tbody>
+  @foreach(var setting in effective.Resolved.Settings)
+  {
+   <tr><td>@setting.Path</td><td><code>@setting.ValueJson</code></td>
+   <td>@setting.Source</td><td>v@setting.Version</td><td>@setting.Author</td>
+   <td>@setting.Reason</td><td>@(setting.ApprovalId??"Not recorded")</td></tr>
+  }
+  </tbody></table>
+  <p class="muted">G = global pinned revision, S = site override, D = device override, O = approved optimization. These labels show the source of the **desired** value, not observed running configuration. Approved deployment, drift (!) and imported values (I) will be completed in later sprints.</p>
+ }
+</section>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+@code {
+ private List<Device> devices=new();
+ private List<PolicyTemplate> templates=new(),compatible=new();
+ private List<Recommendation> approvedRecommendations=new();
+ private Dictionary<Guid,string> locations=new();
+ private Device? selected;
+ private TemplateCatalogService.DeviceEffective? effective;
+ private string deviceId="",templateId="",reason="Authorized network configuration variance",
+   deviceOverrides=SiteConfigurationPolicy.EmptyOverride,
+   optimizationOverrides=SiteConfigurationPolicy.EmptyOverride,
+   recommendationId="",message="";
+ private int? devicePorts;
+ private bool isOperator,error;
+ protected override async Task OnInitializedAsync()
+ {
+  isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  templates=(await Catalog.ListAsync()).ToList();
+  await using(var db=await DbFactory.CreateDbContextAsync()){
+   devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+   locations=(await db.Locations.AsNoTracking().ToListAsync()).ToDictionary(x=>x.Id,x=>x.Name);
+  }
+  if(devices.Count>0)deviceId=devices[0].Id.ToString();
+  await LoadDeviceAsync();
+ }
+ private async Task LoadDeviceAsync()
+ {
+  selected=Guid.TryParse(deviceId,out var id)?devices.FirstOrDefault(x=>x.Id==id):null;
+  compatible=new();approvedRecommendations=new();effective=null;devicePorts=null;
+  deviceOverrides=SiteConfigurationPolicy.EmptyOverride;
+  optimizationOverrides=SiteConfigurationPolicy.EmptyOverride;
+  if(selected is not Device item)return;
+  await using(var db=await DbFactory.CreateDbContextAsync()){
+   var ports=await db.DeviceCapabilities.AsNoTracking().SingleOrDefaultAsync(
+    c=>c.DeviceId==item.Id && c.Operation==SiteConfigurationService.PortCountOperation);
+   devicePorts=ports is null?null:Jcf.NetworkManager.Workflow.SwitchPortInventoryPolicy.DeclaredCount(ports);
+   approvedRecommendations=await db.Recommendations.AsNoTracking()
+    .Where(r=>r.DeviceId==item.Id && r.State==RecommendationState.Approved &&
+      r.ReviewedBy!=null).OrderByDescending(r=>r.ReviewedUtc).Take(30).ToListAsync();
+  }
+  compatible=templates.Where(t=>t.Scope==TemplateCatalogService.ActiveScope)
+   .Where(t=>{
+    var def=TemplateCatalogService.ReadDefinition(t);
+    return def.DeviceKind==item.Kind.ToString()&&(item.IsAccessPoint||def.AccessPorts==devicePorts);
+   }).OrderBy(t=>t.Name).ToList();
+  try{
+   effective=await Catalog.ResolveDeviceAsync(item.Id);
+   templateId=effective.Binding.TemplateId.ToString();
+   deviceOverrides=Format(effective.Binding.DeviceOverrideJson);
+   optimizationOverrides=Format(effective.Binding.OptimizationOverrideJson);
+   recommendationId=effective.Binding.OptimizationRecommendationId?.ToString()??"";
+  }catch(KeyNotFoundException){templateId=compatible.FirstOrDefault()?.Id.ToString()??"";}
+   catch(InvalidOperationException ex){message=ex.Message;error=true;}
+ }
+ private async Task AssignAsync()
+ {
+  try{
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(principal);
+   if(selected is not Device item||!Guid.TryParse(templateId,out var id))
+    throw new ArgumentException("Select a device and compatible global template.");
+   await Catalog.AssignAsync(item.Id,id,principal.Identity?.Name??"",reason);
+   message="Device template pinned. No other device or live configuration changed.";error=false;
+   await LoadDeviceAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SaveDeviceOverrideAsync()
+ {
+  try{
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(principal);
+   if(selected is not Device item)throw new ArgumentException("Select a device.");
+   await Catalog.SetDeviceOverrideAsync(item.Id,deviceOverrides,principal.Identity?.Name??"",reason);
+   message="Versioned desired device variance saved; no physical deployment.";error=false;await LoadDeviceAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SaveOptimizationAsync()
+ {
+  try{
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(principal);
+   if(selected is not Device item||!Guid.TryParse(recommendationId,out var recId))
+    throw new ArgumentException("Select a device and independently approved recommendation.");
+   await Catalog.AddApprovedOptimizationAsync(item.Id,optimizationOverrides,recId,principal.Identity?.Name??"",reason);
+   message="Approved optimization registered as a desired-only override; live radio unchanged.";
+   error=false;await LoadDeviceAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string Format(string json){
+  using var doc=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(doc.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}

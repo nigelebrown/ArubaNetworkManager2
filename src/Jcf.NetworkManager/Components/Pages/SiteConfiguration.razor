@@ -1,0 +1,284 @@
+@page "/site-configuration"
+@attribute [Authorize]
+@using System.Text.Json
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject SiteConfigurationService SiteService
+@inject AuthenticationStateProvider Authentication
+
+<h1>Global → Site Configuration Groups</h1>
+<p class="lede">Manage global network standards and inherit them at each JCF site. Assign AP-505/AP-535 and CX 6100/6200 (24/48-port) devices to site groups. Desired configuration is SQL-backed, versioned and read-only until a separately approved, device-certified deployment occurs.</p>
+<div class="banner">Inheritance changes the <strong>desired</strong> policy, not a physical AP, switch, SSID or VLAN. Global changes automatically affect all linked sites on their next effective-policy read. No passwords or RADIUS secrets are stored in policy JSON. There are no automatic network writes.</div>
+<section class="panel">
+ <h2>1. Global configuration group</h2>
+ <p class="muted">Platform administrators maintain centrally approved standards. Site operators inherit all defined global settings, replacing only explicitly overridden keys.</p>
+ <div class="formgrid">
+  <label>Existing global group
+   <select @bind="selectedGlobal" @bind:after="LoadGlobalAsync">
+    <option value="">New group...</option>
+    @foreach(var t in globals){<option value="@t.Id.ToString()">@t.Name · v@t.Version</option>}
+   </select>
+  </label>
+  <label>New group name <input @bind="globalName" maxlength="120" placeholder="JCF Standard Branch Network" /></label>
+ </div>
+ <label>Global policy JSON — non-secret VLAN, LLDP, PoE defaults, RF, ARM and SSID profile definitions
+  <textarea @bind="globalJson" rows="14" spellcheck="false"></textarea>
+ </label>
+ <div class="actionbar">
+  <button class="secondary" @onclick="ValidateGlobalAsync">Validate global policy</button>
+  @if(isAdmin){<button @onclick="SaveGlobalAsync">@(string.IsNullOrWhiteSpace(selectedGlobal)?"Create global group":"Update global group")</button>}
+ </div>
+ <p class="muted">Global profile version changes are retained in the database as history. Inherited values become the site baseline; replacing global configuration does not execute a device change.</p>
+</section>
+
+<section class="panel">
+ <h2>2. Site and site configuration group</h2>
+ <div class="formgrid">
+  <label>Registered site/location
+   <select @bind="selectedLocation" @bind:after="LoadSiteAsync">
+    <option value="">Choose site...</option>
+    @foreach(var site in locations){<option value="@site.Id.ToString()">@site.Name (@site.Type)</option>}
+   </select>
+  </label>
+  <label>Global group to inherit
+   <select @bind="siteGlobal">
+    <option value="">Choose global group...</option>
+    @foreach(var t in globals){<option value="@t.Id.ToString()">@t.Name · v@t.Version</option>}
+   </select>
+  </label>
+ </div>
+ <details>
+ <summary>Create a site/location if it does not exist</summary>
+ <div class="formgrid">
+  <label>Site name<input @bind="newSiteName" maxlength="120" placeholder="Commissioner's Office" /></label>
+  <label>Site type<select @bind="newSiteType"><option>Station</option><option>HQ</option><option>Building</option><option>Division</option><option>Branch</option><option>Zone</option></select></label>
+  <label>Parent location<select @bind="newSiteParent"><option value="">Top level</option>
+   @foreach(var l in locations){<option value="@l.Id.ToString()">@l.Name (@l.Type)</option>}
+  </select></label>
+ </div>
+ @if(isOperator){<button class="secondary" @onclick="CreateLocationAsync">Register site/location</button>}
+ </details>
+ <label>Site-only overrides JSON
+  <textarea @bind="overridesJson" rows="7" spellcheck="false"></textarea>
+ </label>
+ <p class="muted">An empty override object inherits every defined global setting. Override only the values that differ at this site. VLAN lists and WLAN profile arrays replace their global lists rather than silently merging individual entries.</p>
+ <div class="actionbar">
+  <button class="secondary" @onclick="PreviewEffectiveAsync">Validate and preview inherited policy</button>
+  @if(isOperator){<button @onclick="SaveSiteAsync">Create or update site configuration</button>}
+ </div>
+ @if(effective is not null){
+  <h3>Effective inherited configuration</h3>
+  <p><strong>Global:</strong> @effective.GlobalName v@effective.GlobalVersion · <strong>Site:</strong> v@effective.SiteVersion · No device writes</p>
+  <pre><code>@Format(effective.EffectiveJson)</code></pre>
+ }
+ @if(!string.IsNullOrWhiteSpace(previewJson)){
+  <h3>Effective policy preview (not saved)</h3>
+  <pre><code>@previewJson</code></pre>
+ }
+</section>
+
+<section class="panel">
+ <h2>3. Assign APs and CX switches to a site group</h2>
+ <div class="formgrid">
+  <label>Device
+   <select @bind="selectedDevice">
+    <option value="">Select a registered device...</option>
+    @foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind @(d.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+   </select>
+  </label>
+  <label>Physical CX access ports
+   <select @bind="physicalPorts"><option value="24">24-port CX</option><option value="48">48-port CX</option></select>
+  </label>
+ </div>
+ <p class="muted">For AP devices the port-count selection is ignored. For CX 6100 and CX 6200, 24/48 is stored as <strong>operator-declared</strong> until REST inventory verifies the exact SKU, access interfaces and uplink ports. Site placement history and site-group membership are updated together.</p>
+ @if(isOperator){<button @onclick="AssignDeviceAsync">Assign device to selected site</button>}
+ <h3>Devices at this site (@assignedDevices.Count)</h3>
+ @if(assignedDevices.Count==0){<p class="muted">No devices assigned to this site yet.</p>}
+ else {
+ <table><thead><tr><th>Device</th><th>Model</th><th>IP</th><th>Physical ports</th><th>Type</th><th>Inherited policy</th></tr></thead><tbody>
+ @foreach(var d in assignedDevices)
+ {<tr><td>@d.Name</td><td>@d.Kind</td><td>@d.ManagementIp</td><td>@(ports.GetValueOrDefault(d.Id)??"Not declared")</td><td>@(d.IsSimulated?"Simulated":"Real")</td><td>@(effective is null?"No resolved policy":effective.GlobalName+" v"+effective.GlobalVersion)</td></tr>}
+ </tbody></table>
+ }
+</section>
+
+<section class="panel">
+ <h2>Global and site inventory</h2>
+ <table><thead><tr><th>Site</th><th>Inherited global group</th><th>Devices</th><th>Configuration status</th></tr></thead><tbody>
+ @foreach(var site in locations.Where(x=>siteLinks.ContainsKey(x.Id)))
+ {
+  var info=siteLinks[site.Id];
+  <tr><td>@site.Name</td><td>@(globals.FirstOrDefault(g=>g.Id==info.GlobalTemplateId)?.Name??"Global group missing")</td>
+   <td>@devices.Count(d=>d.LocationId==site.Id)</td>
+   <td>Desired only (not pushed)</td></tr>
+ }
+ </tbody></table>
+</section>
+@if(!string.IsNullOrWhiteSpace(message)){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+
+@code {
+ private const string ExampleGlobal = """
+ {
+   "switch": {
+     "dataVlan": 100, "voiceVlan": 200, "managementVlan": 300,
+     "nativeVlan": 100, "allowedVlans": [100,200,300],
+     "lldpMode": "tx-rx", "poeDefault": "inherit-device", "poePriority": "high"
+   },
+   "wireless": {
+     "width24GhzMhz": 20, "width5GhzMhz": 40,
+     "allowed5GhzChannels": [36,40,44,48],
+     "dfsEnabled": false, "clientMatch": "enabled",
+     "bandSteering": "prefer-higher-band",
+     "airtimeFairness": "fair-access",
+     "minTxPowerDbm": 9, "maxTxPowerDbm": 18
+   }
+ }
+ """;
+ private List<PolicyTemplate> globals=new(),sites=new();
+ private List<Location> locations=new();
+ private List<Device> devices=new(),assignedDevices=new();
+ private Dictionary<Guid,SiteConfigurationService.SiteLink> siteLinks=new();
+ private Dictionary<Guid,string> ports=new();
+ private SiteConfigurationService.EffectiveSite? effective;
+ private string selectedGlobal="",globalName="",globalJson=ExampleGlobal,
+    selectedLocation="",siteGlobal="",overridesJson=SiteConfigurationPolicy.EmptyOverride,
+    newSiteName="",newSiteType="Station",newSiteParent="",
+    selectedDevice="",physicalPorts="24",previewJson="",message="";
+ private bool error,isOperator,isAdmin;
+ protected override async Task OnInitializedAsync()
+ {
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  isAdmin=JcfRoles.IsAdmin(principal);isOperator=JcfRoles.IsOperator(principal);
+  await ReloadAsync();
+ }
+ private async Task ReloadAsync()
+ {
+  await using var db=await DbFactory.CreateDbContextAsync();
+  globals=await db.PolicyTemplates.AsNoTracking().Where(t=>t.Scope=="Global").OrderBy(t=>t.Name).ToListAsync();
+  sites=await db.PolicyTemplates.AsNoTracking().Where(t=>t.Scope=="Site").ToListAsync();
+  locations=await db.Locations.AsNoTracking().OrderBy(l=>l.Name).ToListAsync();
+  devices=await db.Devices.AsNoTracking().OrderBy(d=>d.Name).ToListAsync();
+  siteLinks=new();
+  foreach(var site in sites)
+  {
+   if(site.LocationId is Guid siteId)
+   {
+    try {siteLinks[siteId]=SiteConfigurationService.ReadLink(site.NonSecretJson);}
+    catch(InvalidOperationException) { /* malformed record shown as unconfigured */ }
+   }
+  }
+  ports=(await db.DeviceCapabilities.AsNoTracking()
+     .Where(c=>c.Operation==SiteConfigurationService.PortCountOperation).ToListAsync())
+     .ToDictionary(x=>x.DeviceId,x=>x.EvidenceReference.Replace("operator-declared:","")+" (declared)");
+  await LoadSiteAsync();
+ }
+ private Task LoadGlobalAsync()
+ {
+  var group=globals.FirstOrDefault(x=>x.Id.ToString()==selectedGlobal);
+  if(group is null){globalName="";globalJson=ExampleGlobal;}
+  else {globalName=group.Name;globalJson=Format(group.NonSecretJson);}
+  return Task.CompletedTask;
+ }
+ private async Task LoadSiteAsync()
+ {
+  effective=null;previewJson="";
+  assignedDevices=Guid.TryParse(selectedLocation,out var id)?
+      devices.Where(d=>d.LocationId==id).ToList():new();
+  if(!Guid.TryParse(selectedLocation,out id))return;
+  var site=sites.FirstOrDefault(x=>x.LocationId==id);
+  if(site is null){siteGlobal=globals.FirstOrDefault()?.Id.ToString()??"";overridesJson=SiteConfigurationPolicy.EmptyOverride;return;}
+  var link=SiteConfigurationService.ReadLink(site.NonSecretJson);
+  siteGlobal=link.GlobalTemplateId.ToString();
+  overridesJson=Format(link.OverridesJson);
+  try {effective=await SiteService.ResolveSiteAsync(id);}
+  catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private Task ValidateGlobalAsync()
+ {
+  try{previewJson=Format(SiteConfigurationPolicy.Normalize(globalJson));message="Global policy validated; nothing deployed.";error=false;}
+  catch(Exception ex){message=ex.Message;error=true;previewJson="";}
+  return Task.CompletedTask;
+ }
+ private async Task SaveGlobalAsync()
+ {
+  try {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireAdmin(principal);
+   var actor=principal.Identity?.Name??"";
+   PolicyTemplate global;
+   if(Guid.TryParse(selectedGlobal,out var id))
+       global=await SiteService.UpdateGlobalAsync(id,globalJson,actor);
+   else global=await SiteService.CreateGlobalAsync(globalName,globalJson,actor);
+   selectedGlobal=global.Id.ToString();
+   message="Global group saved, version "+global.Version+". Linked site desired configurations now inherit the latest version. No device changed.";error=false;
+   await ReloadAsync();
+   await LoadGlobalAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task CreateLocationAsync()
+ {
+  try {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireOperator(principal);
+   var name=newSiteName.Trim();
+   if(name.Length<3 || name.Length>120)throw new ArgumentException("Valid 3–120 character site name required.");
+   var allowed=new[]{"Station","HQ","Building","Division","Branch","Zone"};
+   if(!allowed.Contains(newSiteType,StringComparer.Ordinal))throw new ArgumentException("Invalid site type.");
+   var parent=Guid.TryParse(newSiteParent,out var pid)?pid:(Guid?)null;
+   await using var db=await DbFactory.CreateDbContextAsync();
+   if(parent.HasValue && !await db.Locations.AnyAsync(x=>x.Id==parent))throw new ArgumentException("Invalid parent location.");
+   var location=new Location{Name=name,Type=newSiteType,ParentId=parent};
+   db.Locations.Add(location);
+   db.AuditEvents.Add(new AuditEvent{Actor=principal.Identity?.Name??"unknown",Action="Create site location",
+     Target=location.Id.ToString(),Outcome="No devices changed"});
+   await db.SaveChangesAsync();
+   selectedLocation=location.Id.ToString();newSiteName="";
+   message="Site registered. Select global group and save site configuration before assigning devices.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private Task PreviewEffectiveAsync()
+ {
+  try {
+   var global=globals.FirstOrDefault(g=>g.Id.ToString()==siteGlobal)
+     ??throw new ArgumentException("Select an existing global group.");
+   previewJson=Format(SiteConfigurationPolicy.Resolve(global.NonSecretJson,overridesJson));
+   message="Inheritance preview validated. This is desired configuration only.";error=false;
+  }catch(Exception ex){previewJson="";message=ex.Message;error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SaveSiteAsync()
+ {
+  try {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireOperator(principal);
+   if(!Guid.TryParse(selectedLocation,out var locationId) || !Guid.TryParse(siteGlobal,out var globalId))
+       throw new ArgumentException("Select a site and a global configuration group.");
+   var actor=principal.Identity?.Name??"";
+   if(sites.Any(x=>x.LocationId==locationId))
+       await SiteService.UpdateSiteAsync(locationId,globalId,overridesJson,actor);
+   else await SiteService.CreateSiteAsync(locationId,globalId,overridesJson,actor);
+   message="Site configuration saved and inherited; no AP or switch settings were changed.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task AssignDeviceAsync()
+ {
+  try {
+   var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireOperator(principal);
+   if(!Guid.TryParse(selectedLocation,out var siteId)||!Guid.TryParse(selectedDevice,out var deviceId))
+       throw new ArgumentException("Select a site and a device.");
+   var device=devices.FirstOrDefault(d=>d.Id==deviceId)
+       ??throw new ArgumentException("Device not found.");
+   int? count=device.IsAccessPoint?null:int.Parse(physicalPorts);
+   await SiteService.AssignDeviceAsync(deviceId,siteId,count,principal.Identity?.Name??"");
+   message="Device assigned. Global/site desired settings inherited, not deployed.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string Format(string json)
+ {
+  using var doc=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(doc.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}

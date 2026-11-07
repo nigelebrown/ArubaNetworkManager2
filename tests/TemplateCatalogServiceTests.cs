@@ -1,0 +1,203 @@
+using Jcf.NetworkManager.Data;
+using Jcf.NetworkManager.Domain;
+using Jcf.NetworkManager.Services;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+namespace Jcf.NetworkManager.Tests;
+
+public sealed class TemplateCatalogServiceTests
+{
+    sealed class Factory(DbContextOptions<NetworkDbContext> o):IDbContextFactory<NetworkDbContext>
+    {
+        public NetworkDbContext CreateDbContext()=>new(o);
+        public Task<NetworkDbContext> CreateDbContextAsync(CancellationToken ct=default)=>Task.FromResult(CreateDbContext());
+    }
+    private static (Factory Factory,TemplateCatalogService Catalog) New()
+    {
+        var f=new Factory(new DbContextOptionsBuilder<NetworkDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        return(f,new TemplateCatalogService(f));
+    }
+    static TemplateCatalogService.Definition Switch(DeviceKind kind,int ports,int vlan=100,string lldp="tx-rx")
+        =>new(kind.ToString(),ports,
+        System.Text.Json.JsonSerializer.Serialize(new { @switch = new {
+            dataVlan=vlan,voiceVlan=200,managementVlan=300,nativeVlan=100,
+            allowedVlans=new[]{100,200,300,400,500},lldpMode=lldp
+        }}),new[]{"switch.managementVlan"},"Standard switch ports");
+    static TemplateCatalogService.Definition Ap(DeviceKind kind)
+        =>new(kind.ToString(),null,
+        """{"wireless":{"width24GhzMhz":20,"width5GhzMhz":20,"dfsEnabled":false,"minTxPowerDbm":6,"maxTxPowerDbm":12}}""",
+        new[]{"wireless.width24GhzMhz","wireless.dfsEnabled"},"Standard wireless");
+
+    [Fact]
+    public async Task Six_different_switches_and_two_APs_at_one_site_can_pin_distinct_compatible_templates()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="Eight Device Station",Type="Station"};
+        var devices=new[]{
+            new Device{Name="6100-24-A",Kind=DeviceKind.Cx6100},
+            new Device{Name="6100-48-B",Kind=DeviceKind.Cx6100},
+            new Device{Name="6200-24-C",Kind=DeviceKind.Cx6200},
+            new Device{Name="6200-48-D",Kind=DeviceKind.Cx6200},
+            new Device{Name="6100-24-E",Kind=DeviceKind.Cx6100},
+            new Device{Name="6200-48-F",Kind=DeviceKind.Cx6200},
+            new Device{Name="AP505",Kind=DeviceKind.Ap505},
+            new Device{Name="AP535",Kind=DeviceKind.Ap535},
+        };
+        foreach(var d in devices){d.LocationId=site.Id;d.IsSimulated=true;d.ManagementIp="10.251.1."+ (Array.IndexOf(devices,d)+10);}
+        await using(var db=f.CreateDbContext())
+        {
+            db.Locations.Add(site);db.Devices.AddRange(devices);
+            for(int i=0;i<6;i++)
+                db.DeviceCapabilities.Add(new DeviceCapability{
+                    DeviceId=devices[i].Id,Operation=SiteConfigurationService.PortCountOperation,
+                    EvidenceReference="operator-declared:"+(i is 0 or 2 or 4?24:48)
+                });
+            await db.SaveChangesAsync();
+        }
+        var catalog=new[]{
+            await svc.CreateAsync("SW-6100-24",Switch(DeviceKind.Cx6100,24),"admin"),
+            await svc.CreateAsync("SW-6100-48",Switch(DeviceKind.Cx6100,48),"admin"),
+            await svc.CreateAsync("SW-6200-24",Switch(DeviceKind.Cx6200,24),"admin"),
+            await svc.CreateAsync("SW-6200-48",Switch(DeviceKind.Cx6200,48),"admin"),
+            await svc.CreateAsync("AP-505-GLOBAL",Ap(DeviceKind.Ap505),"admin"),
+            await svc.CreateAsync("AP-535-GLOBAL",Ap(DeviceKind.Ap535),"admin"),
+        };
+        int[] selected={0,1,2,3,0,3,4,5};
+        for(int i=0;i<8;i++)
+            await svc.AssignAsync(devices[i].Id,catalog[selected[i]].Id,"operator","Standard site deployment");
+        Assert.Equal(8,(await Task.WhenAll(devices.Select(d=>svc.ResolveDeviceAsync(d.Id)))).Length);
+        await svc.SetDeviceOverrideAsync(devices[0].Id,
+            """{"switch":{"dataVlan":400}}""","operator","Reception data VLAN");
+        Assert.Contains("\"dataVlan\":400",(await svc.ResolveDeviceAsync(devices[0].Id)).Resolved.DesiredJson);
+        Assert.Contains("\"dataVlan\":100",(await svc.ResolveDeviceAsync(devices[4].Id)).Resolved.DesiredJson);
+        await using var check=f.CreateDbContext();
+        Assert.Empty(await check.ConfigProposals.ToListAsync());
+        Assert.Empty(await check.ConfigExecutionEvents.ToListAsync());
+    }
+    [Fact]
+    public async Task Revision_is_pinned_until_two_independent_approvers_review_propagation()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="Site A"};
+        var d=new Device{Name="CX test",Kind=DeviceKind.Cx6100,LocationId=site.Id,ManagementIp="10.251.2.11"};
+        await using(var db=f.CreateDbContext()){
+            db.Locations.Add(site);db.Devices.Add(d);
+            db.DeviceCapabilities.Add(new DeviceCapability{DeviceId=d.Id,
+                Operation=SiteConfigurationService.PortCountOperation,
+                EvidenceReference="operator-declared:24"});
+            await db.SaveChangesAsync();
+        }
+        var old=await svc.CreateAsync("Standard24",Switch(DeviceKind.Cx6100,24),"admin");
+        await svc.AssignAsync(d.Id,old.Id,"operator","Site standard baseline");
+        await svc.ReviseAsync(old.Id,Switch(DeviceKind.Cx6100,24,100,"tx-only"),
+            "policy-editor","Updated LLDP security policy");
+        Assert.Equal(1,(await svc.ResolveDeviceAsync(d.Id)).Binding.PinnedVersion);
+        Assert.Equal("admin",(await svc.ResolveDeviceAsync(d.Id)).Resolved.Settings
+            .Single(x=>x.Path=="switch.lldpMode").Author);
+        var impact=Assert.Single(await svc.ImpactAsync(old.Id));
+        Assert.Contains("switch.lldpMode",impact.ChangedPaths);
+        var req=await svc.RequestPropagationAsync(old.Id,"admin","Reviewed six switch impact");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            ()=>svc.DecidePropagationAsync(req.Id,"admin"));
+        var one=await svc.DecidePropagationAsync(req.Id,"approver-A");
+        Assert.Equal("PendingSecondApproval",TemplateCatalogService.ReadRollout(one).State);
+        var two=await svc.DecidePropagationAsync(req.Id,"approver-B");
+        Assert.Equal("ApprovedDesired",TemplateCatalogService.ReadRollout(two).State);
+        var current=await svc.ResolveDeviceAsync(d.Id);
+        Assert.Equal(2,current.Binding.PinnedVersion);
+        Assert.Equal("policy-editor",current.Resolved.Settings
+            .Single(x=>x.Path=="switch.lldpMode").Author);
+        Assert.Contains("\"lldpMode\":\"tx-only\"",current.Resolved.DesiredJson);
+        await using var check=f.CreateDbContext();
+        Assert.Single(await check.PolicyTemplates.Where(p=>p.Scope=="CatalogHistory").ToListAsync());
+        Assert.Empty(await check.ConfigExecutionEvents.ToListAsync());
+    }
+    [Fact]
+    public void Switch_and_AP_templates_reject_model_or_port_mismatch_and_raw_secrets()
+    {
+        Assert.Throws<ArgumentException>(()=>TemplateCatalogService.NormalizeDefinition(
+            new("Cx6100",null,"""{"switch":{"dataVlan":100}}""",Array.Empty<string>(),"")));
+        Assert.Throws<ArgumentException>(()=>TemplateCatalogService.NormalizeDefinition(
+            new("Ap505",24,"""{"wireless":{"width24GhzMhz":20}}""",Array.Empty<string>(),"")));
+        Assert.Throws<ArgumentException>(()=>TemplateCatalogService.NormalizeDefinition(
+            new("Cx6200",48,"""{"switch":{"password":"abcd"}}""",Array.Empty<string>(),"")));
+    }
+
+    [Fact]
+    public async Task Optimization_override_must_exactly_match_an_independently_approved_recommendation()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="RF Test Station"};
+        var ap=new Device{Name="AP505 RF",Kind=DeviceKind.Ap505,LocationId=site.Id,
+            ManagementIp="10.251.10.4",IsSimulated=true};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(site);db.Devices.Add(ap);await db.SaveChangesAsync();}
+        var template=await svc.CreateAsync("AP505 Standard",Ap(DeviceKind.Ap505),"admin");
+        await svc.AssignAsync(ap.Id,template.Id,"operator","RF site baseline review");
+        await svc.SetDeviceOverrideAsync(ap.Id,
+            """{"wireless":{"minTxPowerDbm":7}}""","device-engineer",
+            "Individual AP coverage adjustment");
+        const string approved = """{"wireless":{"rfPowerMode":"fixed","fixedTxPowerDbm":9}}""";
+        var recommendation=new Recommendation {
+            DeviceId=ap.Id,State=RecommendationState.Approved,
+            Title="Fixed RF power",ProposedSetting=approved,ReviewedBy="rf-approver"
+        };
+        await using(var db=f.CreateDbContext())
+        {db.Recommendations.Add(recommendation);await db.SaveChangesAsync();}
+        await Assert.ThrowsAsync<InvalidOperationException>(()=>svc.AddApprovedOptimizationAsync(
+            ap.Id,"""{"wireless":{"rfPowerMode":"fixed","fixedTxPowerDbm":10}}""",
+            recommendation.Id,"operator","Different power than approval"));
+        await svc.AddApprovedOptimizationAsync(ap.Id,approved,recommendation.Id,
+            "operator","RF coverage correction approved");
+        var resolved=await svc.ResolveDeviceAsync(ap.Id);
+        Assert.Equal("O",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").Source);
+        Assert.Equal("operator",resolved.Resolved.Settings.Single(
+            x=>x.Path=="wireless.fixedTxPowerDbm").Author);
+        Assert.Equal("device-engineer",resolved.Resolved.Settings.Single(
+            x=>x.Path=="wireless.minTxPowerDbm").Author);
+        Assert.Contains("9",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").ValueJson);
+        await using var verify=f.CreateDbContext();
+        Assert.Empty(await verify.ConfigExecutionEvents.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Retired_template_remains_resolvable_for_pinned_devices_without_accepting_new_assignments()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="Site R"};
+        var a=new Device{Name="AP",Kind=DeviceKind.Ap535,LocationId=site.Id,ManagementIp="10.251.20.4"};
+        var b=new Device{Name="AP2",Kind=DeviceKind.Ap535,LocationId=site.Id,ManagementIp="10.251.20.5"};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(site);db.Devices.AddRange(a,b);await db.SaveChangesAsync();}
+        var cat=await svc.CreateAsync("Legacy AP535",Ap(DeviceKind.Ap535),"admin");
+        await svc.AssignAsync(a.Id,cat.Id,"operator","Existing approved AP baseline");
+        await svc.RetireAsync(cat.Id,"admin","New profile supersedes legacy profile");
+        Assert.NotNull((await svc.ResolveDeviceAsync(a.Id)).Resolved);
+        await Assert.ThrowsAsync<KeyNotFoundException>(()=>svc.AssignAsync(
+            b.Id,cat.Id,"operator","New activation must use active template"));
+    }
+
+    [Fact]
+    public async Task Approved_propagation_is_blocked_if_device_override_changes_reviewed_scope()
+    {
+        var(f,svc)=New();
+        var loc=new Location{Name="Site Impact"};
+        var ap=new Device{Name="AP535 Impact",Kind=DeviceKind.Ap535,
+            ManagementIp="10.251.40.5",LocationId=loc.Id};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(loc);db.Devices.Add(ap);await db.SaveChangesAsync();}
+        var global=await svc.CreateAsync("AP impact baseline",Ap(DeviceKind.Ap535),"admin");
+        await svc.AssignAsync(ap.Id,global.Id,"operator","Initial site baseline");
+        var changed=Ap(DeviceKind.Ap535) with{
+            PolicyJson="""{"wireless":{"width24GhzMhz":20,"width5GhzMhz":20,"dfsEnabled":false,"minTxPowerDbm":7,"maxTxPowerDbm":12}}"""
+        };
+        await svc.ReviseAsync(global.Id,changed,"admin","Improve site RF minimum");
+        var req=await svc.RequestPropagationAsync(global.Id,"admin","Reviewed affected AP sites");
+        await svc.SetDeviceOverrideAsync(ap.Id,
+            """{"wireless":{"minTxPowerDbm":7}}""","operator","Local RF correction");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            ()=>svc.DecidePropagationAsync(req.Id,"approver-A"));
+        Assert.Equal(1,(await svc.ResolveDeviceAsync(ap.Id)).Binding.PinnedVersion);
+    }
+}

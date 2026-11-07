@@ -38,6 +38,17 @@ public sealed class ChangeWorkflowService(IDbContextFactory<NetworkDbContext> fa
         await using var db=await factory.CreateDbContextAsync(ct);
         var device=await db.Devices.FindAsync([deviceId],ct) ?? throw new KeyNotFoundException("Target device not found.");
         NetworkChangePolicy.CheckModel(device,action);
+        SwitchConfigPolicy.CheckTarget(device,action,normalized);
+        if(SwitchConfigPolicy.IsPlanned(action))
+        {
+            var countRecord=await db.DeviceCapabilities.AsNoTracking().FirstOrDefaultAsync(
+                c=>c.DeviceId==device.Id&&c.Operation==Jcf.NetworkManager.Services.SiteConfigurationService.PortCountOperation,ct);
+            var observed=await db.PortObservations.AsNoTracking()
+                .Where(x=>x.DeviceId==device.Id && x.AtUtc>=DateTime.UtcNow.AddHours(-24))
+                .OrderByDescending(x=>x.AtUtc).Select(x=>x.Port).Distinct().Take(150).ToListAsync(ct);
+            SwitchPortInventoryPolicy.Check(device,action,normalized,
+                SwitchPortInventoryPolicy.DeclaredCount(countRecord),observed);
+        }
         var request=new ConfigProposal{DeviceId=deviceId,Action=action,PayloadJson=normalized,PayloadSha256=NetworkChangePolicy.Hash(normalized),
             RequestedBy=actor,Justification=reason,BaselineFirmware=device.Firmware};
         // Blast radius recorded for the approvers: the cluster size from the latest successful read of the VC.
@@ -87,6 +98,19 @@ public sealed class ChangeWorkflowService(IDbContextFactory<NetworkDbContext> fa
             throw new InvalidOperationException("Approval expired; revalidate and approve again.");
         var device=await db.Devices.FindAsync([p.DeviceId],ct) ?? throw new KeyNotFoundException("Device not found.");
         NetworkChangePolicy.CheckModel(device,p.Action);
+        SwitchConfigPolicy.CheckTarget(device,p.Action,p.PayloadJson);
+        if(SwitchConfigPolicy.IsPlanned(p.Action))
+        {
+            var countRecord=await db.DeviceCapabilities.AsNoTracking().FirstOrDefaultAsync(
+                c=>c.DeviceId==device.Id&&c.Operation==Jcf.NetworkManager.Services.SiteConfigurationService.PortCountOperation,ct);
+            var observed=await db.PortObservations.AsNoTracking()
+                .Where(x=>x.DeviceId==device.Id && x.AtUtc>=DateTime.UtcNow.AddHours(-24))
+                .OrderByDescending(x=>x.AtUtc).Select(x=>x.Port).Distinct().Take(150).ToListAsync(ct);
+            SwitchPortInventoryPolicy.Check(device,p.Action,p.PayloadJson,
+                SwitchPortInventoryPolicy.DeclaredCount(countRecord),observed);
+        }
+        if(!device.IsSimulated && SwitchConfigPolicy.IsPlanned(p.Action))
+            throw new InvalidOperationException("Switch feature is proposal-only on real CX devices until firmware-certified readback/rollback and management-path checks pass.");
         // No firmware-certified Aruba write/readback/rollback adapter for these new planning controls.
         // They may be approval-tested against simulated devices, but NEVER executed on live equipment.
         if(!device.IsSimulated && ApProfilePolicy.ProposalOnly(p.Action))

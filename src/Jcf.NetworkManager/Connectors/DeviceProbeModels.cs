@@ -11,7 +11,9 @@ public sealed record ProbeResult(
     int? VlanCount, int? PortCount,
     Dictionary<string,string> Arm, Dictionary<string,bool> Fields,
     List<DetectedMember> Members, string? Issue,
-    List<string> ApiChecks,RfObservation? Observation = null, List<DetectedPort>? PortReadings = null, List<DetectedClient>? Clients = null);
+    List<string> ApiChecks,RfObservation? Observation = null, List<DetectedPort>? PortReadings = null, List<DetectedClient>? Clients = null,
+    InstantWlanReadback.Result? WlanReadback = null,
+    CxSwitchReadback.Result? CxReadback = null);
 
 public interface IDeviceConnector
 {
