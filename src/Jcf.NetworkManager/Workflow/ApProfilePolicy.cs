@@ -115,7 +115,7 @@ public static class ApProfilePolicy
             var ssid=Ssid();
             if(Text("confirmSsid",32)!=ssid || !Flag("impactConfirmed"))
                 throw new ArgumentException("WLAN deletion requires matching SSID and explicit service-impact confirmation.");
-            return JsonSerializer.Serialize(new {ssid,impactConfirmed=true});
+            return JsonSerializer.Serialize(new {ssid,confirmSsid=ssid,impactConfirmed=true});
         }
         if(action==ConfigAction.SetAirtimeFairness)
         {
