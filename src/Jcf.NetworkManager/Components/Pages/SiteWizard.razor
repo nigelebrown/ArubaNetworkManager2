@@ -249,8 +249,6 @@ else if(step==9)
    var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
    if(!Guid.TryParse(selectedDevice,out var d))throw new ArgumentException("Select an inventory device.");
    var item=devices.Single(x=>x.Id==d);
-   if(!await DbHasSiteGroupAsync(Id()))
-    throw new InvalidOperationException("Create a site configuration group on the Global → Site Configuration page first.");
    await Sites.AssignDeviceAsync(d,Id(),item.IsAccessPoint?null:portCount,Actor(p));
    message="Device assigned; existing physical configuration unchanged.";error=false;
    await ReloadAsync();
