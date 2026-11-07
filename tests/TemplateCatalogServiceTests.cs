@@ -91,8 +91,10 @@ public sealed class TemplateCatalogServiceTests
         var old=await svc.CreateAsync("Standard24",Switch(DeviceKind.Cx6100,24),"admin");
         await svc.AssignAsync(d.Id,old.Id,"operator","Site standard baseline");
         await svc.ReviseAsync(old.Id,Switch(DeviceKind.Cx6100,24,100,"tx-only"),
-            "admin","Updated LLDP security policy");
+            "policy-editor","Updated LLDP security policy");
         Assert.Equal(1,(await svc.ResolveDeviceAsync(d.Id)).Binding.PinnedVersion);
+        Assert.Equal("admin",(await svc.ResolveDeviceAsync(d.Id)).Resolved.Settings
+            .Single(x=>x.Path=="switch.lldpMode").Author);
         var impact=Assert.Single(await svc.ImpactAsync(old.Id));
         Assert.Contains("switch.lldpMode",impact.ChangedPaths);
         var req=await svc.RequestPropagationAsync(old.Id,"admin","Reviewed six switch impact");
@@ -104,6 +106,8 @@ public sealed class TemplateCatalogServiceTests
         Assert.Equal("ApprovedDesired",TemplateCatalogService.ReadRollout(two).State);
         var current=await svc.ResolveDeviceAsync(d.Id);
         Assert.Equal(2,current.Binding.PinnedVersion);
+        Assert.Equal("policy-editor",current.Resolved.Settings
+            .Single(x=>x.Path=="switch.lldpMode").Author);
         Assert.Contains("\"lldpMode\":\"tx-only\"",current.Resolved.DesiredJson);
         await using var check=f.CreateDbContext();
         Assert.Single(await check.PolicyTemplates.Where(p=>p.Scope=="CatalogHistory").ToListAsync());
@@ -165,5 +169,28 @@ public sealed class TemplateCatalogServiceTests
         Assert.NotNull((await svc.ResolveDeviceAsync(a.Id)).Resolved);
         await Assert.ThrowsAsync<KeyNotFoundException>(()=>svc.AssignAsync(
             b.Id,cat.Id,"operator","New activation must use active template"));
+    }
+
+    [Fact]
+    public async Task Approved_propagation_is_blocked_if_device_override_changes_reviewed_scope()
+    {
+        var(f,svc)=New();
+        var loc=new Location{Name="Site Impact"};
+        var ap=new Device{Name="AP535 Impact",Kind=DeviceKind.Ap535,
+            ManagementIp="10.251.40.5",LocationId=loc.Id};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(loc);db.Devices.Add(ap);await db.SaveChangesAsync();}
+        var global=await svc.CreateAsync("AP impact baseline",Ap(DeviceKind.Ap535),"admin");
+        await svc.AssignAsync(ap.Id,global.Id,"operator","Initial site baseline");
+        var changed=Ap(DeviceKind.Ap535) with{
+            PolicyJson="""{"wireless":{"width24GhzMhz":20,"width5GhzMhz":20,"dfsEnabled":false,"minTxPowerDbm":7,"maxTxPowerDbm":12}}"""
+        };
+        await svc.ReviseAsync(global.Id,changed,"admin","Improve site RF minimum");
+        var req=await svc.RequestPropagationAsync(global.Id,"admin","Reviewed affected AP sites");
+        await svc.SetDeviceOverrideAsync(ap.Id,
+            """{"wireless":{"minTxPowerDbm":7}}""","operator","Local RF correction");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            ()=>svc.DecidePropagationAsync(req.Id,"approver-A"));
+        Assert.Equal(1,(await svc.ResolveDeviceAsync(ap.Id)).Binding.PinnedVersion);
     }
 }
