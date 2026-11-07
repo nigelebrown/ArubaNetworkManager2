@@ -277,6 +277,29 @@ public sealed class DeviceService(IDbContextFactory<NetworkDbContext> dbFactory,
                 }
             }
         }
+        // AOS-CX REST read-only interface configuration evidence, sanitized and bounded.
+        // NEVER persist raw AOS-CX GET responses or management secrets.
+        if(!device.IsSimulated && result.Connected &&
+           result.CxReadback is {IsUsable:true} cxReadback)
+        {
+            var sanitized=JsonSerializer.Serialize(new {
+                schema="cx-interface-readback/v1",
+                quality="Uncertified AOS-CX REST model; not a validated device configuration",
+                interfaces=cxReadback.Interfaces
+            });
+            if(sanitized.Length<=11500)
+            {
+                var digest=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sanitized)));
+                var prior=await db.ConfigurationSnapshots.AsNoTracking()
+                    .Where(x=>x.DeviceId==device.Id&&x.CapturedBy=="cx-interface-readonly")
+                    .OrderByDescending(x=>x.CapturedUtc).FirstOrDefaultAsync(ct);
+                if(prior?.DataSha256!=digest)
+                    db.ConfigurationSnapshots.Add(new ConfigurationSnapshot {
+                        DeviceId=device.Id,Firmware=device.Firmware??"Unknown",
+                        SanitizedJson=sanitized,DataSha256=digest,CapturedBy="cx-interface-readonly"
+                    });
+            }
+        }
         if(result.Observation is RfObservation r)
             db.RadioObservations.Add(new RadioObservation{DeviceId=device.Id,Channel=r.Channel,WidthMhz=r.WidthMhz,
                 UtilizationPct=r.UtilizationPct,NoiseFloorDbm=r.NoiseFloorDbm,ErrorPct=r.ClientRetryPct,
