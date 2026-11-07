@@ -217,6 +217,14 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         if(string.Equals(rec.ReviewedBy,actor,StringComparison.OrdinalIgnoreCase)||
            string.IsNullOrWhiteSpace(rec.ReviewedBy))
             throw new InvalidOperationException("Optimization must be reviewed by a different authenticated user.");
+        // A generic approved recommendation is not authorization for an arbitrary setting.
+        // The exact canonical approved proposal must match the selected device override.
+        string approved;
+        try {approved=SiteConfigurationPolicy.Normalize(rec.ProposedSetting);}
+        catch(ArgumentException){throw new InvalidOperationException(
+            "Approved recommendation does not carry a canonical supported configuration payload.");}
+        if(!string.Equals(approved,normalized,StringComparison.Ordinal))
+            throw new InvalidOperationException("Optimization override differs from the independently approved payload.");
         var assignment=await db.PolicyTemplates.SingleOrDefaultAsync(
             p=>p.Scope==AssignmentScope&&p.Name==AssignmentKey(deviceId),ct)
             ??throw new KeyNotFoundException("A global template assignment is required first.");
@@ -249,7 +257,8 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         var catalog=await db.PolicyTemplates.AsNoTracking().SingleOrDefaultAsync(
             c=>c.Id==binding.TemplateId&&(c.Scope==ActiveScope||c.Scope==RetiredScope),ct)
             ??throw new InvalidOperationException("Template has been deleted; retire templates rather than deleting records.");
-        var version=await PinnedDefinitionAsync(db,catalog,binding.PinnedVersion,ct);
+        var pinned=await PinnedDefinitionAsync(db,catalog,binding.PinnedVersion,ct);
+        var version=pinned.Definition;
         await CheckDeviceAsync(db,device,version,ct);
         var site= device.LocationId is Guid locationId
             ?await db.PolicyTemplates.AsNoTracking().SingleOrDefaultAsync(x=>x.Scope=="Site"&&x.LocationId==locationId,ct)
@@ -257,7 +266,7 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         var siteOverrides=site is null?Empty:SiteConfigurationService.ReadLink(site.NonSecretJson).OverridesJson;
         siteOverrides=FilterForDevice(siteOverrides,device.Kind);
         var baseLayer=new DeviceTemplateResolver.Layer(version.PolicyJson,"G",binding.PinnedVersion,
-            catalog.CreatedBy,"Approved catalog baseline",binding.PropagationApprovalId,catalog.CreatedUtc);
+            pinned.Author,"Pinned catalog revision",binding.PropagationApprovalId,pinned.ModifiedUtc);
         var siteLayer=new DeviceTemplateResolver.Layer(siteOverrides,"S",site?.Version??1,
             site?.CreatedBy??"site","Site-specific configuration variance",null,site?.CreatedUtc??DateTime.MinValue);
         var deviceLayer=new DeviceTemplateResolver.Layer(binding.DeviceOverrideJson,"D",
@@ -278,14 +287,16 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         return parsed[wanted] is JsonObject section?
             new JsonObject{[wanted]=section.DeepClone()}.ToJsonString():Empty;
     }
-    private static async Task<Definition> PinnedDefinitionAsync(NetworkDbContext db,
+    private sealed record PinnedRevision(Definition Definition,string Author,DateTime ModifiedUtc);
+    private static async Task<PinnedRevision> PinnedDefinitionAsync(NetworkDbContext db,
         PolicyTemplate catalog,int version,CancellationToken ct)
     {
-        if(catalog.Version==version)return Decode<Definition>(catalog.NonSecretJson);
+        if(catalog.Version==version)
+            return new(Decode<Definition>(catalog.NonSecretJson),catalog.CreatedBy,catalog.CreatedUtc);
         var history=await db.PolicyTemplates.AsNoTracking().SingleOrDefaultAsync(p=>
             p.Scope==HistoryScope&&p.Name==VersionKey(catalog.Id,version),ct)
             ??throw new InvalidOperationException("Immutable template revision missing.");
-        return Decode<Definition>(history.NonSecretJson);
+        return new(Decode<Definition>(history.NonSecretJson),history.CreatedBy,history.CreatedUtc);
     }
     public async Task<IReadOnlyList<Impact>> ImpactAsync(Guid templateId,CancellationToken ct=default)
     {
@@ -352,7 +363,8 @@ public sealed class TemplateCatalogService(IDbContextFactory<NetworkDbContext> f
         var req=Decode<Rollout>(row.NonSecretJson);
         if(req.State is not("PendingApproval" or "PendingSecondApproval"))
             throw new InvalidOperationException("Request already decided.");
-        if(actor==req.RequestedBy||actor==req.FirstApprovedBy)
+        if(string.Equals(actor,req.RequestedBy,StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(actor,req.FirstApprovedBy,StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Requester and approvers must be different users.");
         var template=await db.PolicyTemplates.AsNoTracking().SingleOrDefaultAsync(
             x=>x.Id==req.TemplateId&&x.Scope==ActiveScope,ct)
