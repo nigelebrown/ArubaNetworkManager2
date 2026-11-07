@@ -5,7 +5,8 @@ namespace Jcf.NetworkManager.Domain;
 public enum ConfigAction {
     CreateSsid, ChangeBandSteering, ChangeMinTxPower, CreateSwitchVlan,
     ChangeClientMatch, SetChannelPolicy, SetSwitchPortVlan, SetSwitchPoe,
-    UpsertWlanProfile, SetWlanEnabled, DeleteWlanProfile, SetAirtimeFairness, SetRfPowerBounds
+    UpsertWlanProfile, SetWlanEnabled, DeleteWlanProfile, SetAirtimeFairness, SetRfPowerBounds,
+    PlanCxTrunk, PlanCxPortAdmin, PlanCxLag, PlanCxLldp, PlanCxPoePolicy
 }
 public enum ConfigProposalState { PendingApproval, PendingSecondApproval, Approved, Rejected, Executing, Applied, Failed, RecoveryRequired }
 public enum ApiCapabilityState { Unknown, ReadVerified, WriteVerified, Unsupported, Blocked }
