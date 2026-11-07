@@ -47,7 +47,8 @@ public sealed class ConfigurationVarianceService(IDbContextFactory<NetworkDbCont
         {
             var effective=desired.GetValueOrDefault(key)??Unknown;
             var actual=observed.GetValueOrDefault(key)??Unknown;
-            var source=optimization.ContainsKey(key)?"O":deviceValues.ContainsKey(key)?"D":
+            var source=key.StartsWith("imported.",StringComparison.Ordinal)?"I":
+                optimization.ContainsKey(key)?"O":deviceValues.ContainsKey(key)?"D":
                 siteValues.ContainsKey(key)?"S":"G";
             var drift=observedIsCertified&&observed.ContainsKey(key)&&
                 desired.ContainsKey(key)&&effective!=actual;
