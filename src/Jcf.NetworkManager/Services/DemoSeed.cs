@@ -39,7 +39,7 @@ public sealed class SampleDataService(IDbContextFactory<NetworkDbContext> factor
 {
     public static async Task SeedAsync(NetworkDbContext db)
     {
-        if(await db.Devices.AnyAsync(d=>d.IsSimulated)) return;
+        if(await db.Devices.AnyAsync(d=>d.IsSimulated)) { await SeedReadOnlyApFixturesAsync(db); return; }
         var area=await db.Locations.FirstOrDefaultAsync(l=>l.Name=="Sample Branch (demo)") ?? db.Locations.Add(new Location{Name="Sample Branch (demo)",Type="Branch"}).Entity;
         var lab=await db.Locations.FirstOrDefaultAsync(l=>l.Name=="Sample Station (demo)") ?? db.Locations.Add(new Location{Name="Sample Station (demo)",Type="Station",ParentId=area.Id}).Entity;
         var ap=new Device{Name="Sample AP-505",Kind=DeviceKind.Ap505,ManagementIp=DemoSeed.SampleAddressPrefix+"71",LocationId=lab.Id,SecretRef="SAMPLE",ClusterName="SAMPLE-VC",IsSimulated=true,Firmware="8.10.0.21"};
@@ -53,6 +53,73 @@ public sealed class SampleDataService(IDbContextFactory<NetworkDbContext> factor
         foreach(var op in new[]{"ssid.create","arm.band-steering.write","arm.min-power.write","arm.client-match.write","arm.channel-policy.write"})
             db.DeviceCapabilities.Add(new DeviceCapability{DeviceId=ap.Id,Firmware=ap.Firmware!,Operation=op,State=ApiCapabilityState.WriteVerified,EvidenceReference="SAMPLE-SIMULATED-ONLY"});
         db.AuditEvents.Add(new AuditEvent{Actor="system",Action="Seed sample data",Target="Sample inventory",Outcome="3 simulated devices (192.0.2.0/24)"});
+
+        await SeedReadOnlyApFixturesAsync(db);
+    }
+
+    /// <summary>Idempotent labeled sample RF/client readings. These are synthetic SQL fixtures;
+    /// they never poll, contact, or configure an Aruba AP. Existing measured telemetry wins.</summary>
+    private static async Task SeedReadOnlyApFixturesAsync(NetworkDbContext db)
+    {
+        var aps=await db.Devices.Where(d=>d.IsSimulated &&
+            (d.Kind==DeviceKind.Ap505 || d.Kind==DeviceKind.Ap535)).OrderBy(d=>d.Name).ToListAsync();
+        var now=DateTime.UtcNow;
+        foreach(var d in aps)
+        {
+            if(d.LastStatus=="Unknown") d.LastStatus="Simulated";
+            var is505=d.Kind==DeviceKind.Ap505;
+            var fiveChannel=is505?36:44;
+            if(!await db.TelemetrySnapshots.AnyAsync(s=>s.DeviceId==d.Id))
+            {
+                db.TelemetrySnapshots.Add(new TelemetrySnapshot {
+                    DeviceId=d.Id,AtUtc=now,ApiConnected=true,ApCount=1,ClientCount=is505?8:5,
+                    RadioChannel=fiveChannel,ChannelWidthMhz=40,
+                    ChannelUtilizationPct=is505?42m:27m,NoiseFloorDbm=is505?-92m:-95m,
+                    ClientRetryPct=is505?4m:2m,
+                    ObservationSource="SIMULATED RF fixture - not a live measurement",
+                    ArmJson=System.Text.Json.JsonSerializer.Serialize(new Dictionary<string,string>{
+                        ["80mhz-support"]="disabled",["160mhz-support"]="none",
+                        ["band-steering-mode"]="prefer-5ghz",["client-match"]="enable",
+                        ["air-time-fairness-mode"]="fair-access",["min-tx-power"]="9",
+                        ["max-tx-power"]="18",["scanning"]="enable"}),
+                    MetricAvailabilityJson="{}"
+                });
+            }
+            if(!await db.RadioObservations.AnyAsync(s=>s.DeviceId==d.Id))
+            {
+                db.RadioObservations.AddRange(
+                    new RadioObservation {DeviceId=d.Id,RadioName="2.4 GHz",AtUtc=now,
+                        Channel=is505?1:6,WidthMhz=20,PowerDbm=12m,
+                        UtilizationPct=is505?31m:23m,NoiseFloorDbm=-94m,
+                        Source="SIMULATED fixture",Quality="Simulated"},
+                    new RadioObservation {DeviceId=d.Id,RadioName="5 GHz",AtUtc=now,
+                        Channel=fiveChannel,WidthMhz=40,PowerDbm=15m,
+                        UtilizationPct=is505?42m:27m,NoiseFloorDbm=is505?-92m:-95m,
+                        Source="SIMULATED fixture",Quality="Simulated"});
+            }
+            if(!await db.ClientSessions.AnyAsync(s=>s.DeviceId==d.Id))
+            {
+                for(var index=1;index<=3;index++)
+                {
+                    var text="JCF-SYNTHETIC-CLIENT/"+d.Id.ToString("N")+"/"+index;
+                    var identifier=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(text)));
+                    db.ClientSessions.Add(new ClientSession {
+                        DeviceId=d.Id,ClientHash=identifier,Ssid="JCF-SAMPLE-STAFF",
+                        Band=index==1?"2.4 GHz":"5 GHz",FirstSeenUtc=now.AddMinutes(-20),
+                        LastSeenUtc=now,RssiDbm=-50m-(index*6),SnrDb=33m-index*3,
+                        RetryPct=1m+index,AssociatedVlan=120,Source="SIMULATED fixture"
+                    });
+                }
+            }
+            if(!await db.ClusterMembers.AnyAsync(m=>m.ConductorDeviceId==d.Id))
+            {
+                db.ClusterMembers.Add(new ClusterMember {
+                    ConductorDeviceId=d.Id,Name=d.Name,Model=is505?"AP-505":"AP-535",
+                    Zone="SAMPLE-LAB",DiscoveryConfidence="Simulated",
+                    ObservedUtc=now});
+            }
+        }
         await db.SaveChangesAsync();
     }
 
