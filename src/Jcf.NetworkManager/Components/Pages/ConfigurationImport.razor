@@ -1,0 +1,99 @@
+@page "/configuration-import"
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Components.Forms
+@using System.Text
+@inject ConfigurationImportService Imports
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Configuration Import, Reconciliation &amp; Recovery</h1>
+<p class="lede">Preserve existing deployed configurations before proposing standardization. Full-fidelity manual files are encrypted outside the web root; SQL stores an audit manifest and a separate allowlisted, non-secret projection.</p>
+<div class="banner">Import is deliberately read-only. Unknown Aruba commands remain in the encrypted original and are flagged. Manual imports do not prove current device state, and the system does not automatically restore configuration to physical equipment.</div>
+@if(Imports.FullRecoveryRequiresTls){
+ <div class="banner error">Full-configuration import and recovery downloads are disabled while this server uses temporary HTTP. They may contain passwords, keys and authentication data. Enable HTTPS before performing sensitive imports.</div>
+}
+<section class="panel">
+ <h2>Import existing Aruba configuration</h2>
+ <div class="formgrid">
+  <label>Registered device<select @bind="deviceId"><option value="">Select device...</option>
+   @foreach(var d in devices){<option value="@d.Id.ToString()">@d.Name · @d.Kind @(d.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+  </select></label>
+  <label>Configuration syntax<select @bind="format"><option value="AosCxCli">AOS-CX running-config CLI</option>
+   <option value="InstantCli">Aruba Instant running-config CLI</option></select></label>
+ </div>
+ <label>Paste configuration, or select a text file (maximum 1 MiB)
+ <textarea @bind="rawConfiguration" rows="12" spellcheck="false" placeholder="Full running configuration from an authorized operator or offline backup"></textarea></label>
+ <InputFile OnChange="ReadFileAsync" accept=".txt,.cfg,.conf,.log,text/plain" />
+ <label>Change/backup purpose<input @bind="reason" maxlength="250" placeholder="Original configuration before JCF site migration"/></label>
+ @if(isOperator && !Imports.FullRecoveryRequiresTls){<button @onclick="ImportAsync">Encrypt and store original; parse nonsecret settings</button>}
+ <p class="muted">AOS-CX/Instant are different grammars; choose the registered device model. Existing running configuration is never overwritten by import. Keep source and encryption-key backups in the approved disaster-recovery store.</p>
+</section>
+<section class="panel">
+ <h2>Stored encrypted recovery backups (@records.Count)</h2>
+ @if(records.Count==0){<p class="muted">No imported recovery files have been registered.</p>}
+ else {
+ <table><thead><tr><th>UTC</th><th>Device</th><th>Format</th><th>Size</th><th>Recognized / unrecognized</th><th>SHA-256</th><th>Custodian</th><th>Recovery</th></tr></thead><tbody>
+ @foreach(var record in records){
+  <tr><td>@record.ImportedUtc.ToString("yyyy-MM-dd HH:mm")</td>
+  <td>@record.DeviceName</td><td>@record.Format</td><td>@record.Bytes bytes</td>
+  <td>@record.RecognizedLines / @record.UnrecognizedLines</td>
+  <td>@record.Sha256[..Math.Min(12,record.Sha256.Length)]…</td>
+  <td>@record.ImportedBy</td><td>
+   @if(isAdmin && !Imports.FullRecoveryRequiresTls){
+    <a href="@RecoveryUrl(record.Id)">Audited recovery export</a>
+   }else{<text>Requires HTTPS + admin</text>}
+  </td></tr>
+ }
+ </tbody></table>
+ }
+ <p class="muted">Recovery exports require platform administrator rights, a stated operational reason, the original protected Data Protection key ring, and verification of the backup's SHA-256 digest. Exporting does not restore any device.</p>
+</section>
+<section class="panel">
+ <h2>Reconciliation and proposed cleanup</h2>
+ @if(selectedResult is null){<p class="muted">Import a configuration to obtain a non-secret parsed projection. The full unrecognized command set remains preserved in the encrypted original for manual comparison.</p>}
+ else {
+  <p><b>Backup ID:</b> @selectedResult.Manifest.Id · <b>Quality:</b> @selectedResult.Quality ·
+  <b>Unrecognized lines:</b> @selectedResult.Manifest.UnrecognizedLines</p>
+  <pre><code>@selectedResult.SanitizedJson</code></pre>
+  <p><a href="/device-inheritance">Compare with the selected device template and create scoped desired overrides</a> ·
+  <a href="/configuration-variance">Review configuration variance</a></p>
+ }
+</section>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+@code{
+ private List<Device> devices=new();
+ private List<ConfigurationImportService.Manifest> records=new();
+ private ConfigurationImportService.Readback? selectedResult;
+ private string deviceId="",format="AosCxCli",rawConfiguration="",
+   reason="Pre-migration configuration recovery snapshot",message="";
+ private bool isOperator,isAdmin,error;
+ protected override async Task OnInitializedAsync(){
+  var user=(await Authentication.GetAuthenticationStateAsync()).User;
+  isOperator=JcfRoles.IsOperator(user);isAdmin=JcfRoles.IsAdmin(user);
+  await using(var db=await DbFactory.CreateDbContextAsync()){
+   devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  }
+  records=(await Imports.ListAsync()).ToList();
+ }
+ private async Task ReadFileAsync(InputFileChangeEventArgs e){
+  try{
+   await using var stream=e.File.OpenReadStream(1_048_576);
+   using var reader=new StreamReader(stream,Encoding.UTF8,detectEncodingFromByteOrderMarks:true);
+   rawConfiguration=await reader.ReadToEndAsync();
+   message="File loaded in browser session; not yet imported or saved.";error=false;
+  }catch(Exception ex){message="File read rejected: "+ex.GetType().Name;error=true;}
+ }
+ private async Task ImportAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(user);
+   if(!Guid.TryParse(deviceId,out var id))throw new ArgumentException("Choose a device first.");
+   selectedResult=await Imports.ImportManualAsync(id,rawConfiguration,format,
+    user.Identity?.Name??"",reason);
+   rawConfiguration="";
+   records=(await Imports.ListAsync()).ToList();
+   message="Full original encrypted; only non-secret values indexed. No network device changed.";error=false;
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private string RecoveryUrl(Guid id)=>"/api/v1/recovery/"+id.ToString("D")+
+   "/download?purpose="+Uri.EscapeDataString(reason);
+}
