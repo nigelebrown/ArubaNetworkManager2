@@ -22,6 +22,7 @@ public sealed class InstantConnector(DeviceHttpFactory factory, SecretResolver s
         bool authenticated = false;
         RfObservation? observation = null;
         var detectedClients=new List<DetectedClient>();
+        InstantWlanReadback.Result? wlanReadback=null;
         using var http = factory.Create(d, DevicePorts.Management(d.Kind));
         string? sid = null;
         try
@@ -50,6 +51,13 @@ public sealed class InstantConnector(DeviceHttpFactory factory, SecretResolver s
             detectedClients=ParseClients(clientText);
             var config = await ReadAsync("show running-config", true);
             arm = ExtractArm(config ?? "");
+            if(config is not null)
+            {
+                wlanReadback=InstantWlanReadback.Parse(config);
+                // The vendor CLI may be truncated or vary by firmware. Parsing does NOT certify completeness.
+                tests.Add("INFO WLAN readback parse: "+wlanReadback.Status+
+                    " (uncertified AOS-8 CLI schema, no secrets retained)");
+            }
             var armText = await ReadAsync("show arm config", false);
             var statsText = await ReadAsync("show stats ap " + d.ManagementIp, false);
             observation = ParseRfObservation(statsText);
@@ -74,7 +82,7 @@ public sealed class InstantConnector(DeviceHttpFactory factory, SecretResolver s
                 catch { /* session will expire; do not expose credentials */ }
             }
         }
-        return new ProbeResult(authenticated,version,count,clients,null,null,arm,fields,members,issue,tests,observation,null,detectedClients);
+        return new ProbeResult(authenticated,version,count,clients,null,null,arm,fields,members,issue,tests,observation,null,detectedClients,wlanReadback);
 
         async Task<string?> ReadAsync(string command, bool required)
         {
