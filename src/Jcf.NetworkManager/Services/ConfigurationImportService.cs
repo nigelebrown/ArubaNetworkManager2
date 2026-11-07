@@ -76,7 +76,7 @@ public sealed class ConfigurationImportService(
         var id=Guid.NewGuid();
         var root=DirectoryPath;
         Directory.CreateDirectory(root);
-        if(OperatingSystem.IsLinux()) Directory.SetUnixFileMode(root,
+        if(OperatingSystem.IsLinux()) File.SetUnixFileMode(root,
            UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
         var file=id.ToString("N")+".jcfenc";
         var path=Path.Combine(root,file);
