@@ -1,0 +1,201 @@
+@page "/template-library"
+@attribute [Authorize]
+@using System.Text.Json
+@inject TemplateCatalogService Catalog
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Global Template Library</h1>
+<p class="lede">Reusable, versioned and model-specific Aruba CX/AP configuration standards. Devices pin individual approved versions; a template revision never silently changes them or a physical device.</p>
+<div class="banner">Configuration templates are desired-state records only. Two independent change approvers must authorize proposed propagation to device desired states. This page never executes device commands.</div>
+<section class="panel">
+ <h2>Template inventory</h2>
+ <table><thead><tr><th>Name</th><th>Hardware</th><th>Ports</th><th>Version</th><th>Status</th><th>Author</th></tr></thead><tbody>
+ @foreach(var entry in templates)
+ {
+  var def=TemplateCatalogService.ReadDefinition(entry);
+  <tr><td>@entry.Name</td><td>@def.DeviceKind</td><td>@(def.AccessPorts?.ToString()??"AP")</td><td>v@entry.Version</td>
+   <td>@(entry.Scope==TemplateCatalogService.ActiveScope?"Active":"Retired")</td><td>@entry.CreatedBy</td></tr>
+ }
+ </tbody></table>
+</section>
+<section class="panel">
+ <h2>Create, edit or clone templates</h2>
+ <div class="formgrid">
+  <label>Existing template
+   <select @bind="selectedId" @bind:after="LoadSelectionAsync">
+    <option value="">Create new template</option>
+    @foreach(var item in templates){<option value="@item.Id.ToString()">@item.Name · v@item.Version @(item.Scope==TemplateCatalogService.RetiredScope?"(retired)":"")</option>}
+   </select>
+  </label>
+  <label>New template name<input @bind="name" maxlength="120" placeholder="SW-ACCESS-24-STANDARD"/></label>
+  <label>Hardware family<select @bind="model">
+   <option value="Cx6100">CX 6100</option><option value="Cx6200">CX 6200</option>
+   <option value="Ap505">AP-505</option><option value="Ap535">AP-535</option></select></label>
+  @if(model.StartsWith("Cx",StringComparison.Ordinal))
+  {
+   <label>Chassis access-port form factor<select @bind="ports"><option value="24">24 ports</option><option value="48">48 ports</option></select></label>
+  }
+  <label>Template description<input @bind="notes" maxlength="250" placeholder="Approved baseline and intended hardware"/></label>
+  <label>Mandatory non-overridable keys (CSV)<input @bind="mandatoryKeys" placeholder="switch.managementVlan,wireless.dfsEnabled"/></label>
+  <label>Revision or retirement justification<input @bind="reason" maxlength="180" placeholder="Review impact, reason and change ticket"/></label>
+ </div>
+ <label>Global non-secret settings JSON
+ <textarea @bind="policyJson" rows="13" spellcheck="false"></textarea></label>
+ <p class="muted">Use only allowed switch/wireless policy keys; never paste PSKs, passwords, user tokens or arbitrary CLI commands. Mandatory paths must exist in the template. Approved 2.4 GHz: 20 MHz; 5 GHz: 20/40 MHz; 80/160 MHz and DFS exclusions enforced.</p>
+ <div class="actionbar">
+  <button class="secondary" @onclick="ValidateAsync">Validate configuration</button>
+  @if(isAdmin){
+   <button @onclick="SaveAsync">@(string.IsNullOrWhiteSpace(selectedId)?"Create template":"Save new immutable revision")</button>
+   @if(!string.IsNullOrWhiteSpace(selectedId)){
+    <button class="secondary" @onclick="CloneAsync">Clone as new template</button>
+    <button class="secondary" @onclick="RetireAsync">Retire selected template</button>
+   }
+  }
+ </div>
+ @if(preview.Length>0){<h3>Validated policy</h3><pre><code>@preview</code></pre>}
+</section>
+<section class="panel">
+ <h2>Template revision impact and controlled propagation</h2>
+ <p>Choose an existing template and evaluate which devices still use a pinned older version. An update is proposed separately from physical deployment.</p>
+ <div class="actionbar">
+  <button class="secondary" @onclick="CheckImpactAsync">Calculate site/device impact</button>
+  @if(isAdmin){<button @onclick="RequestPropagationAsync">Request two-person propagation approval</button>}
+ </div>
+ @if(impact.Count>0)
+ {
+  <p><strong>@impact.Count</strong> devices pinned to earlier versions; <strong>@impact.Count(x=>x.Blocker is not null)</strong> blocked by conflicts.</p>
+  <table><thead><tr><th>Device</th><th>Site</th><th>Pinned</th><th>Proposed</th><th>Changed keys</th><th>Blocker</th></tr></thead><tbody>
+  @foreach(var row in impact)
+  {<tr><td>@row.DeviceName</td><td>@(row.Site??"Unknown")</td><td>v@row.PinnedVersion</td><td>v@row.ProposedVersion</td><td>@string.Join(", ",row.ChangedPaths)</td><td>@(row.Blocker??"None")</td></tr>}
+  </tbody></table>
+ }
+ else{<p class="muted">No impact calculated or no older version pins exist. Global changes never automatically rebase devices.</p>}
+ <h3>Pending propagation approvals</h3>
+ @if(rollouts.Count==0){<p class="muted">No pending propagation requests.</p>}
+ else {
+ <table><thead><tr><th>Requested by</th><th>Template</th><th>Version</th><th>Status</th><th>Reason</th><th>Approval</th></tr></thead><tbody>
+ @foreach(var proposal in rollouts){
+  var r=TemplateCatalogService.ReadRollout(proposal);
+  <tr><td>@r.RequestedBy</td><td>@(templates.FirstOrDefault(t=>t.Id==r.TemplateId)?.Name??"Unavailable")</td>
+   <td>v@r.TargetVersion</td><td>@r.State</td><td>@r.Reason</td><td>
+   @if(isApprover && r.State is "PendingApproval" or "PendingSecondApproval")
+   {<button class="smallbutton secondary" @onclick="()=>ApproveAsync(proposal.Id)">Independently approve</button>}
+   else {<text>Review only</text>}
+   </td></tr>
+ }
+ </tbody></table>
+ }
+ <p>Device-specific assignments and variances: <a href="/device-inheritance">Device Inheritance</a>.</p>
+</section>
+@if(message.Length>0){<p class="feedback @(error?"error":"")" role="status">@message</p>}
+
+@code {
+ private const string ExampleSwitch = """
+ {"switch":{"dataVlan":100,"voiceVlan":200,"managementVlan":300,
+ "nativeVlan":100,"allowedVlans":[100,200,300,400,500],
+ "lldpMode":"tx-rx","poeDefault":"inherit-device","poePriority":"high"}}
+ """;
+ private List<PolicyTemplate> templates=new(),rollouts=new();
+ private List<TemplateCatalogService.Impact> impact=new();
+ private string selectedId="",name="",notes="",reason="Controlled configuration review",
+ model="Cx6100",mandatoryKeys="switch.managementVlan",
+ policyJson=ExampleSwitch,preview="",message="";
+ private int ports=24;
+ private bool isAdmin,isApprover,error;
+ protected override async Task OnInitializedAsync(){
+  var principal=(await Authentication.GetAuthenticationStateAsync()).User;
+  isAdmin=JcfRoles.IsAdmin(principal);isApprover=JcfRoles.IsApprover(principal);
+  await ReloadAsync();
+ }
+ private async Task ReloadAsync(){
+  templates=(await Catalog.ListAsync()).ToList();
+  await using var db=await DbFactory.CreateDbContextAsync();
+  rollouts=await db.PolicyTemplates.AsNoTracking()
+   .Where(p=>p.Scope==TemplateCatalogService.RolloutScope)
+   .OrderByDescending(p=>p.CreatedUtc).Take(50).ToListAsync();
+ }
+ private Task LoadSelectionAsync(){
+  impact=new();preview="";
+  var entry=templates.FirstOrDefault(t=>t.Id.ToString()==selectedId);
+  if(entry is null){name="";model="Cx6100";ports=24;policyJson=ExampleSwitch;mandatoryKeys="switch.managementVlan";notes="";}
+  else{
+   var def=TemplateCatalogService.ReadDefinition(entry);
+   name=entry.Name;model=def.DeviceKind;ports=def.AccessPorts??24;policyJson=Format(def.PolicyJson);
+   mandatoryKeys=string.Join(",",def.MandatoryPaths);notes=def.Notes;
+  }
+  return Task.CompletedTask;
+ }
+ private TemplateCatalogService.Definition Build()=>
+  TemplateCatalogService.NormalizeDefinition(new(
+   model,model.StartsWith("Cx",StringComparison.Ordinal)?ports:null,policyJson,
+   mandatoryKeys.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries),notes));
+ private Task ValidateAsync(){
+  try{var d=Build();preview=Format(d.PolicyJson);message="Template validated; no device settings changed.";error=false;}
+  catch(Exception ex){message=ex.Message;preview="";error=true;}
+  return Task.CompletedTask;
+ }
+ private async Task SaveAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireAdmin(user);
+   PolicyTemplate template;
+   if(Guid.TryParse(selectedId,out var id))template=await Catalog.ReviseAsync(id,Build(),
+      user.Identity?.Name??"",reason);
+   else template=await Catalog.CreateAsync(name,Build(),user.Identity?.Name??"");
+   selectedId=template.Id.ToString();
+   message="Template "+template.Name+" v"+template.Version+" saved; no pinned device changed.";
+   error=false;await ReloadAsync();await LoadSelectionAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task CloneAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;
+   JcfRoles.RequireAdmin(user);
+   if(!Guid.TryParse(selectedId,out var id))throw new ArgumentException("Choose source template.");
+   if(name==templates.FirstOrDefault(t=>t.Id==id)?.Name)
+       throw new ArgumentException("Enter a new name to clone this template.");
+   var copied=await Catalog.CloneAsync(id,name,user.Identity?.Name??"");
+   selectedId=copied.Id.ToString();message="Cloned as "+copied.Name+". Other devices remain pinned.";
+   error=false;await ReloadAsync();await LoadSelectionAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task RetireAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireAdmin(user);
+   if(!Guid.TryParse(selectedId,out var id))throw new ArgumentException("Choose active template.");
+   await Catalog.RetireAsync(id,user.Identity?.Name??"",reason);
+   message="Template retired for new assignments; existing pinned revisions remain resolvable.";
+   error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task CheckImpactAsync(){
+  try{
+   if(!Guid.TryParse(selectedId,out var id))throw new ArgumentException("Select a template.");
+   impact=(await Catalog.ImpactAsync(id)).ToList();
+   message="Impact calculated. No device or pinned version changed.";error=false;
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task RequestPropagationAsync(){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireAdmin(user);
+   if(!Guid.TryParse(selectedId,out var id))throw new ArgumentException("Select a template.");
+   var request=await Catalog.RequestPropagationAsync(id,user.Identity?.Name??"",reason);
+   message="Propagation request "+request.Id+" awaits two distinct approvers. No live device configuration changed.";
+   error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task ApproveAsync(Guid requestId){
+  try{
+   var user=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireApprover(user);
+   var result=await Catalog.DecidePropagationAsync(requestId,user.Identity?.Name??"");
+   var state=TemplateCatalogService.ReadRollout(result).State;
+   message=state+" — only SQL desired-version pins update after the second approval; no device writes.";
+   error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string Format(string json){
+  using var doc=JsonDocument.Parse(json);
+  return JsonSerializer.Serialize(doc.RootElement,new JsonSerializerOptions{WriteIndented=true});
+ }
+}
