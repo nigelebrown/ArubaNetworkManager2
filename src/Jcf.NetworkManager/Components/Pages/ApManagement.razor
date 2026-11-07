@@ -94,6 +94,7 @@
  </section>
 }
 @code {
+ [Parameter, SupplyParameterFromQuery(Name="deviceId")] public string? InitialDeviceId {get;set;}
  private List<Device> aps=new();
  private Dictionary<Guid,string> locations=new();
  private string selectedId="",message="";
@@ -109,6 +110,8 @@
    await using var db=await DbFactory.CreateDbContextAsync();
    aps=await db.Devices.AsNoTracking().Where(d=>d.Kind==DeviceKind.Ap505||d.Kind==DeviceKind.Ap535).OrderBy(d=>d.Name).ToListAsync();
    locations=(await db.Locations.AsNoTracking().ToListAsync()).ToDictionary(x=>x.Id,x=>x.Name);
+   if(string.IsNullOrWhiteSpace(selectedId) && Guid.TryParse(InitialDeviceId,out var requestId) && aps.Any(x=>x.Id==requestId))
+     selectedId=requestId.ToString();
    if(string.IsNullOrWhiteSpace(selectedId)&&aps.Count>0)selectedId=aps[0].Id.ToString();
    await LoadSelectionAsync();
  }
