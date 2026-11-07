@@ -203,8 +203,8 @@ else
             <h2>Step 8 — Continue configuring now or later</h2>
             <p>Registered devices are now managed in SQL inventory. Choose the next process; nothing will be automatically pushed to equipment.</p>
             <div class="wizard-choices">
-                <a class="wizard-choice-link" href="@(accessPoints?"/ap-management":"/switches")">Configure @(accessPoints?"AP groups / WLAN / RF":"switch VLANs / ports") now</a>
-                <a class="wizard-choice-link" href="/configuration">Create configuration proposals</a>
+                <a class="wizard-choice-link" href="@ManagementUrl()">Configure @(accessPoints?"AP groups / WLAN / RF":"switch VLANs / ports") now</a>
+                <a class="wizard-choice-link" href="@ConfigurationUrl()">Create configuration proposals</a>
                 <a class="wizard-choice-link" href="/changes">Review approvals and deployment gates</a>
                 <a class="wizard-choice-link" href="/devices">Finish for now — view managed inventory</a>
             </div>
@@ -257,6 +257,17 @@ else
     private List<Candidate> candidates=[];
     private List<Candidate> Selected()=>candidates.Where(c=>c.Selected).ToList();
     private string AllowedCidrs()=>string.Join(", ",Config.GetSection("Jcf:AllowedManagementCidrs").Get<string[]>()??[]) is string text && text.Length>0?text:"None configured";
+    private string ManagementUrl()
+    {
+        var device=Selected().Count==1?Selected()[0].DeviceId:null;
+        if(!accessPoints)return "/switches";
+        return device is Guid id?"/ap-management?deviceId="+id:"/ap-management";
+    }
+    private string ConfigurationUrl()
+    {
+        var device=Selected().Count==1?Selected()[0].DeviceId:null;
+        return device is Guid id?"/configuration?deviceId="+id:"/configuration";
+    }
     private string ProfileStatus()
     {
         var c=profiles.FirstOrDefault(x=>x.Reference.Equals(credentialRef.Trim(),StringComparison.OrdinalIgnoreCase));
