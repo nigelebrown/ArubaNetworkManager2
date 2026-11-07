@@ -143,8 +143,14 @@ public sealed class SiteConfigurationServiceTests
         await using(var db=factory.CreateDbContext()) {
             db.Locations.Add(location);db.Devices.Add(sw);await db.SaveChangesAsync();
         }
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            ()=>svc.AssignDeviceAsync(sw.Id,location.Id,48,"operator"));
+        // Wizard Step 2 intentionally assigns an existing device before choosing site policy.
+        await svc.AssignDeviceAsync(sw.Id,location.Id,48,"operator");
+        await using(var verify=factory.CreateDbContext())
+        {
+            Assert.Equal(location.Id,(await verify.Devices.SingleAsync()).LocationId);
+            Assert.Single(await verify.DeviceGroups.Where(x=>x.Kind=="SiteConfig").ToListAsync());
+            Assert.Empty(await verify.PolicyTemplates.Where(x=>x.Scope=="Site").ToListAsync());
+        }
         var global=await svc.CreateGlobalAsync("JCF Baseline",Baseline,"admin");
         await svc.CreateSiteAsync(location.Id,global.Id,SiteConfigurationPolicy.EmptyOverride,"operator");
         await Assert.ThrowsAsync<ArgumentException>(
