@@ -1,0 +1,141 @@
+@page "/ap-management"
+@attribute [Authorize]
+@using System.Text.Json
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+
+<h1>Access Point Management</h1>
+<p class="lede">Operational view for Aruba Instant AP-505 and AP-535. Inventory, RF, clients, clusters and configuration evidence are loaded read-only from SQL. Real-device changes require separate approval.</p>
+<div class="banner">JCF RF standard: 2.4 GHz = 20 MHz; 5 GHz = 20 or 40 MHz only. 80/160 MHz are prohibited. Uncertified or missing device readings remain unknown. Only approved non-DFS channels may be proposed, subject to the device's regulatory domain.</div>
+<section class="panel">
+ <h2>AP fleet status</h2>
+ <div class="arm-grid">
+  <div><small>Registered access points</small><strong>@aps.Count</strong></div>
+  <div><small>Simulated devices</small><strong>@aps.Count(x=>x.IsSimulated)</strong></div>
+  <div><small>Reported healthy</small><strong>@aps.Count(x=>x.LastStatus.Equals("Online",StringComparison.OrdinalIgnoreCase)||x.LastStatus.Equals("Healthy",StringComparison.OrdinalIgnoreCase))</strong></div>
+  <div><small>Awaiting first probe</small><strong>@aps.Count(x=>x.LastProbeUtc is null)</strong></div>
+ </div>
+ <p class="muted">Fleet counts use saved inventory state; this page does not initiate API connections.</p>
+ <div class="formgrid">
+ <label>Select AP / Instant VC
+  <select @bind="selectedId"><option value="">Select an AP...</option>@foreach(var ap in aps){<option value="@ap.Id.ToString()">@ap.Name · @ap.Kind @(ap.IsSimulated?"[SIMULATED]":"")</option>}</select>
+ </label>
+ </div>
+ <div class="actionbar"><button @onclick="LoadSelectionAsync">View AP details</button><button class="secondary" @onclick="RefreshAsync">Refresh saved data</button></div>
+ @if(!string.IsNullOrEmpty(message)){<p role="status" class="feedback">@message</p>}
+</section>
+@if(selected is { } d){
+ <section class="panel">
+  <h2>@d.Name @if(d.IsSimulated){<span class="chip sample">SIMULATED</span>}</h2>
+  <p><strong>@d.Kind</strong> · @d.ManagementIp · Firmware @(d.Firmware??"Unknown") · @(d.ClusterName??"Cluster name unavailable")</p>
+  <table><tbody>
+   <tr><th>Location</th><td>@(locations.GetValueOrDefault(d.LocationId??Guid.Empty)??"Not assigned")</td></tr>
+   <tr><th>API status</th><td>@d.LastStatus @if(!string.IsNullOrEmpty(d.LastIssue)){<small> · @d.LastIssue</small>}</td></tr>
+   <tr><th>Last probe (UTC)</th><td>@(d.LastProbeUtc?.ToString("yyyy-MM-dd HH:mm:ss")??"Not yet probed")</td></tr>
+   <tr><th>Data source</th><td>@(d.IsSimulated?"Built-in simulator; never contacts equipment":"Previously saved device REST/telemetry responses")</td></tr>
+   <tr><th>Configuration</th><td><a href="/configuration">Propose an AP change</a> · <a href="/changes">Review approvals</a> · <a href="/recommendations">Optimization recommendations</a></td></tr>
+  </tbody></table>
+ </section>
+ <section class="panel">
+  <h2>RF &amp; ARM readings</h2>
+  @if(last is null){<p class="muted">No saved telemetry. Use Devices &amp; API discovery to obtain a fresh, authorized read.</p>}
+  else {
+   <div class="arm-grid">
+    <div><small>Reported clients</small><strong>@(last.ClientCount?.ToString()??"Unknown")</strong></div>
+    <div><small>5 GHz channel (if identified)</small><strong>@(last.RadioChannel?.ToString()??"Unknown")</strong></div>
+    <div><small>Observed channel width</small><strong>@(last.ChannelWidthMhz is int w?w+" MHz":"Unknown")</strong></div>
+    <div><small>Channel utilization</small><strong>@(last.ChannelUtilizationPct is decimal u?u+"%":"Unknown")</strong></div>
+    <div><small>Noise floor</small><strong>@(last.NoiseFloorDbm is decimal n?n+" dBm":"Unknown")</strong></div>
+    <div><small>Client retries</small><strong>@(last.ClientRetryPct is decimal r?r+"%":"Unknown")</strong></div>
+   </div>
+   <p class="muted">Recorded @last.AtUtc.ToString("u") · @last.ObservationSource · @(DateTime.UtcNow-last.AtUtc>TimeSpan.FromMinutes(20)?"STALE: over 20 minutes old":"recent sample")</p>
+   @if(last.ChannelWidthMhz is int width && width>40){<p class="banner error">RF policy drift: the recorded width exceeds 40 MHz. Submit a review; no automatic change will occur.</p>}
+   @if(last.RadioChannel is int channel && NetworkChangePolicy.ExcludedDfs5GhzChannels.Contains(channel)){<p class="banner">Recorded channel @channel is excluded by the JCF compatibility baseline.</p>}
+   @if(arm.Count>0){<h3>Observed Instant ARM settings</h3><table><thead><tr><th>Setting</th><th>Reported value</th></tr></thead><tbody>
+    @foreach(var setting in arm.OrderBy(x=>x.Key)){<tr><td>@setting.Key</td><td>@setting.Value</td></tr>}
+   </tbody></table>}
+   else{<p class="muted">No certified ARM setting values were persisted for this sample.</p>}
+  }
+  <h3>Per-radio observations (latest 20)</h3>
+  @if(radios.Count==0){<p class="muted">No per-radio observations recorded for this AP.</p>}
+  else{<table><thead><tr><th>Time (UTC)</th><th>Radio</th><th>Channel</th><th>Width</th><th>Power</th><th>Utilization</th><th>Noise</th><th>Quality</th></tr></thead><tbody>
+   @foreach(var rf in radios){<tr><td>@rf.AtUtc.ToString("MM-dd HH:mm")</td><td>@(rf.RadioName??"Unknown")</td>
+   <td>@(rf.Channel?.ToString()??"—")</td><td>@(rf.WidthMhz is int wm?wm+" MHz":"—")</td>
+   <td>@(rf.PowerDbm is decimal dbm?dbm+" dBm":"—")</td><td>@(rf.UtilizationPct is decimal util?util+"%":"—")</td>
+   <td>@(rf.NoiseFloorDbm is decimal noise?noise+" dBm":"—")</td><td>@rf.Quality</td></tr>}
+  </tbody></table>}
+ </section>
+ <section class="panel">
+  <h2>Wireless clients</h2>
+  <p class="muted">Client identifiers are pseudonymized; no raw client MAC addresses are displayed.</p>
+  @if(clients.Count==0){<p class="muted">No saved client sessions. This does not mean there are zero connected clients.</p>}
+  else{<table><thead><tr><th>Client reference</th><th>SSID</th><th>Band</th><th>RSSI</th><th>SNR</th><th>Retry</th><th>Last seen (UTC)</th></tr></thead><tbody>
+    @foreach(var c in clients){<tr><td>@ShortHash(c.ClientHash)</td><td>@(c.Ssid??"Unknown")</td><td>@(c.Band??"Unknown")</td><td>@(c.RssiDbm?.ToString()??"—")</td><td>@(c.SnrDb?.ToString()??"—")</td><td>@(c.RetryPct is decimal retry?retry+"%":"—")</td><td>@c.LastSeenUtc.ToString("MM-dd HH:mm")</td></tr>}
+   </tbody></table>}
+ </section>
+ <section class="panel">
+  <h2>Instant cluster / virtual controller</h2>
+  @if(members.Count==0){<p class="muted">No independently parsed member list exists yet. VC configuration may affect multiple APs; member scope must be verified before approval.</p>}
+  else{<table><thead><tr><th>Member</th><th>Model</th><th>Zone</th><th>Discovery confidence</th><th>Observed (UTC)</th></tr></thead><tbody>
+   @foreach(var m in members){<tr><td>@m.Name</td><td>@m.Model</td><td>@(m.Zone??"Unknown")</td><td>@m.DiscoveryConfidence</td><td>@m.ObservedUtc.ToString("MM-dd HH:mm")</td></tr>}
+  </tbody></table>}
+ </section>
+ <section class="panel">
+  <h2>Configuration baselines &amp; proposed improvements</h2>
+  <p>Sanitized configuration snapshots: <strong>@snapshots.Count</strong> · pending optimization recommendations: <strong>@recommendations.Count</strong></p>
+  @if(snapshots.Count>0){<table><thead><tr><th>Captured UTC</th><th>Firmware</th><th>Fingerprint</th><th>Captured by</th></tr></thead><tbody>
+  @foreach(var snap in snapshots){<tr><td>@snap.CapturedUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@snap.Firmware</td><td>@ShortHash(snap.DataSha256)</td><td>@snap.CapturedBy</td></tr>}
+  </tbody></table>}
+  @if(recommendations.Count==0){<p class="muted">No pending recommendations stored for this AP.</p>}
+  else{<table><thead><tr><th>Title</th><th>Risk</th><th>Suggested action</th></tr></thead><tbody>
+  @foreach(var rec in recommendations){<tr><td>@rec.Title</td><td>@rec.Risk</td><td>@rec.ProposedSetting</td></tr>}
+  </tbody></table>}
+  <p class="muted">Configuration snapshots are sanitized evidence, not full recoverable backups. Approval and execution remain separate and audited.</p>
+ </section>
+}
+@code {
+ private List<Device> aps=new();
+ private Dictionary<Guid,string> locations=new();
+ private string selectedId="",message="";
+ private Device? selected;
+ private TelemetrySnapshot? last;
+ private List<RadioObservation> radios=new();
+ private List<ClientSession> clients=new();
+ private List<ClusterMember> members=new();
+ private List<ConfigurationSnapshot> snapshots=new();
+ private List<Recommendation> recommendations=new();
+ protected override async Task OnInitializedAsync(){await RefreshAsync();}
+ private async Task RefreshAsync(){
+   await using var db=await DbFactory.CreateDbContextAsync();
+   aps=await db.Devices.AsNoTracking().Where(d=>d.Kind==DeviceKind.Ap505||d.Kind==DeviceKind.Ap535).OrderBy(d=>d.Name).ToListAsync();
+   locations=(await db.Locations.AsNoTracking().ToListAsync()).ToDictionary(x=>x.Id,x=>x.Name);
+   if(string.IsNullOrWhiteSpace(selectedId)&&aps.Count>0)selectedId=aps[0].Id.ToString();
+   await LoadSelectionAsync();
+ }
+ private async Task LoadSelectionAsync(){
+   selected=Guid.TryParse(selectedId,out var id)?aps.FirstOrDefault(x=>x.Id==id):null;
+   last=null;radios=new();clients=new();members=new();snapshots=new();recommendations=new();
+   if(selected is null){message="Select a registered AP.";return;}
+   message="";
+   await using var db=await DbFactory.CreateDbContextAsync();
+   last=await db.TelemetrySnapshots.AsNoTracking().Where(x=>x.DeviceId==selected.Id).OrderByDescending(x=>x.AtUtc).FirstOrDefaultAsync();
+   radios=await db.RadioObservations.AsNoTracking().Where(x=>x.DeviceId==selected.Id).OrderByDescending(x=>x.AtUtc).Take(20).ToListAsync();
+   clients=await db.ClientSessions.AsNoTracking().Where(x=>x.DeviceId==selected.Id).OrderByDescending(x=>x.LastSeenUtc).Take(30).ToListAsync();
+   members=await db.ClusterMembers.AsNoTracking().Where(x=>x.ConductorDeviceId==selected.Id).OrderBy(x=>x.Name).Take(100).ToListAsync();
+   snapshots=await db.ConfigurationSnapshots.AsNoTracking().Where(x=>x.DeviceId==selected.Id).OrderByDescending(x=>x.CapturedUtc).Take(5).ToListAsync();
+   recommendations=await db.Recommendations.AsNoTracking().Where(x=>x.DeviceId==selected.Id&&x.State==RecommendationState.Pending).OrderByDescending(x=>x.AtUtc).Take(15).ToListAsync();
+ }
+ private Dictionary<string,string> arm => ParseArm(last?.ArmJson);
+ private static Dictionary<string,string> ParseArm(string? json){
+   var approved=new HashSet<string>(StringComparer.OrdinalIgnoreCase){
+     "80mhz-support","160mhz-support","band-steering-mode","client-match","air-time-fairness-mode",
+     "min-tx-power","max-tx-power","scanning","spectrum-load-balancing","client-aware",
+     "clientmatch","band-steering","wide-bands"};
+   if(string.IsNullOrWhiteSpace(json))return new();
+   try {
+     var parsed=JsonSerializer.Deserialize<Dictionary<string,string>>(json)??new();
+     return parsed.Where(x=>approved.Contains(x.Key)).ToDictionary(x=>x.Key,x=>x.Value);
+   }catch(JsonException){return new();}
+ }
+ private static string ShortHash(string value)=>string.IsNullOrWhiteSpace(value)?"Not available":value[..Math.Min(12,value.Length)]+"…";
+}
