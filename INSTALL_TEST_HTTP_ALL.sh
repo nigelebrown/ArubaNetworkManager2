@@ -166,7 +166,7 @@ say "Applying source-controlled EF Core migrations on the local development data
   dotnet tool restore >/dev/null
   dotnet ef database update --project src/Jcf.NetworkManager/Jcf.NetworkManager.csproj \
     --startup-project src/Jcf.NetworkManager/Jcf.NetworkManager.csproj \
-    --context NetworkDbContext --no-build >/dev/null
+    --context NetworkDbContext --configuration Release --no-build >/dev/null
 ) || die "EF Core migrations failed; check SQL Server logs"
 unset SA_CONN
 say "Creating protected Data Protection certificate, persistent keys and bootstrap account"
