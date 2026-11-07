@@ -45,9 +45,7 @@ public sealed class SimulatedWlanStateTests
         var list=new[]{
             Applied(ConfigAction.UpsertWlanProfile,Staff,1),
             Applied(ConfigAction.UpsertWlanProfile,
-               """{"ssid":"JCF-GUEST","vlan":230,"securityMode":"wpa2-personal",
-               "band":"dual","purpose":"guest","pskSecretRef":"GUEST_VAULT",
-               "clientIsolation":true,"pmf":"capable","enabled":true}""",2),
+               """{"ssid":"JCF-GUEST","vlan":230,"securityMode":"wpa2-personal","band":"dual","purpose":"guest","pskSecretRef":"GUEST_VAULT","clientIsolation":true,"pmf":"capable","enabled":true}""",2),
             Applied(ConfigAction.DeleteWlanProfile,
                """{"ssid":"JCF-STAFF","confirmSsid":"JCF-STAFF","impactConfirmed":true}""",3)
         };
