@@ -25,7 +25,7 @@ public sealed class ArubaLabApprovedChangeGateway(DeviceHttpFactory factory,Secr
         { "80mhz-support", "client-match", "scanning", "client-aware", "spectrum-load-balancing" };
 
     public Task<ChangeExecutionOutcome> ExecuteAsync(Device device,ConfigProposal p,CancellationToken ct) =>
-        ApProfilePolicy.ProposalOnly(p.Action)
+        (ApProfilePolicy.ProposalOnly(p.Action) || SwitchConfigPolicy.IsPlanned(p.Action))
           ? Task.FromResult(new ChangeExecutionOutcome(false,true,false,
               "Real-hardware write refused: this WLAN/RF feature has no firmware-certified REST adapter. No device contacted."))
           : device.IsAccessPoint ? InstantAsync(device,p,ct) : CxAsync(device,p,ct);
