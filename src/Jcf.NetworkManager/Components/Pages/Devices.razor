@@ -6,14 +6,19 @@
 @inject CredentialVault Vault
 @inject AuthenticationStateProvider Authentication
 @inject IConfiguration Config
-<h1>Devices, credentials & API discovery</h1>
-<p class="lede">Onboard Aruba Instant APs (REST 4343) and AOS-CX switches (REST 443). Monitoring is read-only; configuration changes only happen through approved proposals.</p>
+<h1>Managed device inventory</h1>
+<p class="lede">Review registered devices, current health, encrypted credentials and API evidence. For new devices, use the guided onboarding workflow rather than filling in this manual form.</p>
+<div class="actionbar">
+    <a class="wizard-choice-link" href="/onboarding?type=ap">Discover and onboard APs</a>
+    <a class="wizard-choice-link" href="/onboarding?type=switch">Discover and onboard CX switches</a>
+    <a class="wizard-choice-link" href="/credentials">Manage credential profiles</a>
+</div>
 @if(sampleCount>0){<div class="banner">@sampleCount sample device(s) marked <span class="chip sample">SAMPLE</span> are served by the built-in simulator and never contacted. Every device you register here is real and is polled over the network@(isAdmin?"; remove the samples under Operator accounts > Sample data when you go live":"").</div>}
 <div class="banner @(writePolicy.Enabled?"warn":"")">Device configuration writes: <b>@(writePolicy.Enabled?"ENABLED for "+WriteTargets():"disabled")</b>@(writePolicy.Enabled && writePolicy.AllowClusterWide?" · cluster-wide Instant changes allowed":"").</div>
 @if(!string.IsNullOrEmpty(message)){<p class="feedback @(messageIsError?"error":"")" role="status">@message</p>}
 
 @if(isOperator){
-<section class="panel"><h2>Add a device</h2>
+<details class="panel"><summary>Advanced: manual single-device registration</summary><h2>Manual registration</h2>
 <div class="formgrid">
  <label>Display name<input @bind="name" placeholder="HQ-FLOOR2-AP505-01" maxlength="120" /></label>
  <label>Equipment type<select @bind="kind"><option value="Ap505">Aruba AP-505 (Instant)</option><option value="Ap535">Aruba AP-535 (Instant)</option><option value="Cx6100">Aruba CX 6100</option><option value="Cx6200">Aruba CX 6200</option></select></label>
@@ -28,7 +33,7 @@
 <p class="muted">A credential profile can be shared (for example every AP in one Instant cluster). Username/password entered here are encrypted into that profile and never displayed again; leave them blank to reuse an existing profile. For an Instant cluster register the virtual-controller address.</p>
 <div class="actionbar"><button disabled="@working" @onclick="()=>RegisterAsync(false)">Register device</button>
 <button class="secondary" disabled="@working" @onclick="()=>RegisterAsync(true)">Register and test connection</button></div>
-</section>}
+</details>}
 
 <section class="panel"><h2>Inventory (@devices.Count)</h2>
 @if(devices.Count==0){<p class="muted">No registered equipment.</p>}
@@ -80,7 +85,7 @@ else {<table><thead><tr><th>Name / IP</th><th>Model</th><th>Firmware</th><th>Hea
 <div class="actionbar"><button @onclick="SaveEditAsync">Save</button><button class="secondary" @onclick="()=>editing=null">Cancel</button></div>
 </section>}
 
-<section class="panel"><h2>Credential profiles</h2>
+<section class="panel" id="credential-profiles"><h2>Credential profiles</h2>
 <table><thead><tr><th>Profile</th><th>Source</th><th>Devices</th><th>Last changed</th>@if(isOperator){<th></th>}</tr></thead><tbody>
 @foreach(var c in credentials){<tr><td><b>@c.Reference</b>@if(c.Description is not null){<br/><small>@c.Description</small>}</td>
 <td><span class="chip @(c.Source.StartsWith("MISSING")?"bad":"")">@c.Source</span></td><td>@c.DevicesUsing</td>
