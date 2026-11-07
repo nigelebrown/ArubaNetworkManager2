@@ -14,7 +14,7 @@ public static class NetworkChangePolicy
     // Policy options are constrained further by regulatory domain, model and configured client compatibility.
     public static readonly int[] PreferredNonDfs5GhzChannels = [36, 40, 44, 48, 149, 153, 157, 161, 165];
     public static readonly int[] ExcludedDfs5GhzChannels = [52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144];
-    public static bool RequiresSecondApprover(ConfigAction a) => ApProfilePolicy.ProposalOnly(a) || a is ConfigAction.ChangeBandSteering
+    public static bool RequiresSecondApprover(ConfigAction a) => SwitchConfigPolicy.IsPlanned(a) || ApProfilePolicy.ProposalOnly(a) || a is ConfigAction.ChangeBandSteering
         or ConfigAction.ChangeMinTxPower or ConfigAction.ChangeClientMatch or ConfigAction.SetChannelPolicy
         or ConfigAction.SetSwitchPortVlan or ConfigAction.SetSwitchPoe;
 
@@ -45,6 +45,7 @@ public static class NetworkChangePolicy
         if(root.TryGetProperty("channel5Ghz",out var ch) && (ch.ValueKind != JsonValueKind.Number || !ch.TryGetInt32(out var chan) || !PreferredNonDfs5GhzChannels.Contains(chan)))
             throw new ArgumentException("Selected 5 GHz channel is not in the JCF non-DFS compatibility pool.");
         if(ApProfilePolicy.ProposalOnly(action)) return ApProfilePolicy.Normalize(action,payload);
+        if(SwitchConfigPolicy.IsPlanned(action)) return SwitchConfigPolicy.Normalize(action,payload);
         return action switch {
             ConfigAction.CreateSsid => SerializeSsid(Text("ssid",32),Number("vlan",2,4094),Text("pskSecretRef",40)),
             ConfigAction.ChangeBandSteering => SerializeBand(Text("value",30)),
@@ -119,6 +120,11 @@ public static class NetworkChangePolicy
         ConfigAction.DeleteWlanProfile=>"wlan.profile.delete.UNVERIFIED",
         ConfigAction.SetAirtimeFairness=>"arm.airtime-fairness.UNVERIFIED",
         ConfigAction.SetRfPowerBounds=>"arm.power-bounds.UNVERIFIED",
+        ConfigAction.PlanCxTrunk=>"switch.trunk-profile.UNVERIFIED",
+        ConfigAction.PlanCxPortAdmin=>"switch.port-admin.UNVERIFIED",
+        ConfigAction.PlanCxLag=>"switch.lacp.UNVERIFIED",
+        ConfigAction.PlanCxLldp=>"switch.lldp.UNVERIFIED",
+        ConfigAction.PlanCxPoePolicy=>"switch.poe-priority.UNVERIFIED",
         ConfigAction.CreateSsid=>"ssid.create", ConfigAction.ChangeBandSteering=>"arm.band-steering.write",
         ConfigAction.ChangeMinTxPower=>"arm.min-power.write", ConfigAction.CreateSwitchVlan=>"switch.vlan.create",
         ConfigAction.ChangeClientMatch=>"arm.client-match.write",ConfigAction.SetChannelPolicy=>"arm.channel-policy.write",
@@ -127,7 +133,7 @@ public static class NetworkChangePolicy
     };
     public static void CheckModel(Device device, ConfigAction action) {
         bool ap=device.IsAccessPoint;
-        var switchAction=action is ConfigAction.CreateSwitchVlan or ConfigAction.SetSwitchPortVlan or ConfigAction.SetSwitchPoe;
+        var switchAction=action is ConfigAction.CreateSwitchVlan or ConfigAction.SetSwitchPortVlan or ConfigAction.SetSwitchPoe || SwitchConfigPolicy.IsPlanned(action);
         // WLAN and RF proposals are AP-only; all switch actions are segregated by target class.
         if(ap && switchAction || !ap && !switchAction)
             throw new InvalidOperationException("This action is not supported for the selected equipment class.");
