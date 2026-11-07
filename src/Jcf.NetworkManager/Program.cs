@@ -165,6 +165,7 @@ builder.Services.AddScoped<ChangeWorkflowService>();
 builder.Services.AddScoped<CapabilityService>();
 builder.Services.AddScoped<EnterpriseOperationsService>();
 builder.Services.AddScoped<SiteConfigurationService>();
+builder.Services.AddScoped<TemplateCatalogService>();
 builder.Services.AddScoped<NetworkDiagnosticsService>();
 builder.Services.AddScoped<IncidentService>();
 builder.Services.AddScoped<AlertService>();
