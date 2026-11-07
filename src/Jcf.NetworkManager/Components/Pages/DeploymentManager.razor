@@ -1,0 +1,115 @@
+@page "/deployment-manager"
+@attribute [Authorize]
+@inject DeploymentPlanService Deployment
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Dependency-Aware Deployment Manager</h1>
+<p class="lede">Plan, independently approve and rehearse deployments from confirmed LLDP topology. Additive VLANs are staged upstream first; disruptive port changes use downstream-first order where dependencies permit.</p>
+<div class="banner">Physical switch/AP execution is DISABLED for this feature until firmware and SKU-specific backups, checkpoints, timed rollback, management-path protection and readback are certified. Do not interpret simulated success as physical equipment validation.</div>
+<section class="panel">
+ <h2>1. Build a dry-run dependency plan</h2>
+ <div class="formgrid">
+  <label>Site<select @bind="siteId" @bind:after="ReloadAsync"><option value="">Select JCF site...</option>
+   @foreach(var loc in locations){<option value="@loc.Id.ToString()">@loc.Name (@loc.Type)</option>}
+  </select></label>
+  <label>Change class<select @bind="changeClass">
+   <option value="AdditiveVlan">Introduce VLAN / additive changes</option>
+   <option value="DisruptivePort">Disruptive port/uplink change</option>
+   <option value="ManagementPath">Management VLAN / gateway / uplink path</option>
+   <option value="RadioCluster">Aruba Instant cluster radio/SSID change</option>
+  </select></label>
+ </div>
+ <label>Deployment justification and window<input @bind="reason" maxlength="200"/></label>
+ @if(isOperator){<button @onclick="CreateAsync">Create dependency and impact preview</button>}
+ <p class="muted">A draft snapshots effective desired SHA-256 settings and topology dependencies. It is invalidated if a template, inventory or confirmed link changes before approval or execution.</p>
+</section>
+<section class="panel">
+ <h2>2. Review and approve plan</h2>
+ @if(plans.Count==0){<p class="muted">No plans created for this site.</p>}
+ else{
+  <table><thead><tr><th>Plan</th><th>Type</th><th>Equipment</th><th>Blockers</th><th>Status</th><th>Review</th></tr></thead><tbody>
+  @foreach(var plan in plans){
+   <tr><td>@plan.CreatedUtc.ToString("MM-dd HH:mm")</td><td>@plan.ChangeClass</td><td>@plan.Steps.Count</td>
+    <td>@plan.Blockers.Count</td><td>@plan.State</td><td><button class="secondary" @onclick="()=>SelectPlanAsync(plan.Id)">View plan</button></td></tr>
+  }</tbody></table>
+ }
+ @if(selected is { } plan){
+  <h3>@plan.SiteName — @plan.ChangeClass</h3>
+  <p><b>State:</b> @plan.State · <b>Requested by:</b> @plan.RequestedBy ·
+   <b>Approval 1:</b> @(plan.FirstApprovedBy??"Outstanding") ·
+   <b>Approval 2:</b> @(plan.SecondApprovedBy??"Outstanding")</p>
+  @if(plan.Blockers.Count>0){<h4>Preflight blockers</h4><ul>@foreach(var b in plan.Blockers){<li>@b</li>}</ul>}
+  <table><thead><tr><th>Order</th><th>Target</th><th>Desired hash</th><th>Execution evidence</th><th>State</th><th>Result</th></tr></thead><tbody>
+  @foreach(var step in plan.Steps){
+   <tr><td>@step.Sequence</td><td>@step.Name</td><td>@step.DesiredSha256[..Math.Min(12,step.DesiredSha256.Length)]</td>
+    <td>@(step.BeforeSha256??"Not started") → @(step.AfterSha256??"Not started")</td>
+    <td>@step.State</td><td>@(step.Detail??"Pending")</td></tr>
+  }</tbody></table>
+  <div class="actionbar">
+   @if(isApprover && plan.State is "PendingApproval" or "PendingSecondApproval"){
+    <button class="secondary" @onclick="()=>ApproveAsync(plan.Id)">Independent approval</button>}
+   @if(isOperator && plan.State=="ApprovedSimulation"){
+    <button @onclick="()=>SimulateAsync(plan.Id)">Execute simulation with verification/rollback</button>}
+  </div>
+  <p class="muted">ApprovedSimulation permits SQL-only test execution. There is no button or API to deploy these uncertified operations to real equipment.</p>
+ }
+</section>
+<section class="panel">
+ <h2>3. Verification and results</h2>
+ <p>Every successful simulation step includes a persisted desired/readback hash. On test failure, later steps are not executed; completed steps are restored in reverse order and the plan records whether recovery verification succeeded.</p>
+ <p><a href="/configuration-variance">Compare desired and observed configuration</a> ·
+ <a href="/configuration-import">Review encrypted prechange backups</a> ·
+ <a href="/site-wizard">Return to Site Wizard</a></p>
+</section>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+@code{
+ private List<Location> locations=new();
+ private List<DeploymentPlanService.Record> plans=new();
+ private DeploymentPlanService.Record? selected;
+ private string siteId="",changeClass="AdditiveVlan",
+  reason="Approved change review with backup, verification and rollback controls",message="";
+ private bool isOperator,isApprover,error;
+ protected override async Task OnInitializedAsync(){
+  var p=(await Authentication.GetAuthenticationStateAsync()).User;
+  isOperator=JcfRoles.IsOperator(p);isApprover=JcfRoles.IsApprover(p);
+  await using var db=await DbFactory.CreateDbContextAsync();
+  locations=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  if(locations.Count>0)siteId=locations[0].Id.ToString();
+  await ReloadAsync();
+ }
+ private async Task ReloadAsync(){
+  plans=(await Deployment.ListAsync(Guid.TryParse(siteId,out var id)?id:null)).ToList();
+  if(selected is not null)selected=plans.FirstOrDefault(x=>x.Id==selected.Id);
+ }
+ private async Task CreateAsync(){
+  try{
+   var p=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   if(!Guid.TryParse(siteId,out var id))throw new ArgumentException("Select a site.");
+   var kind=Enum.Parse<DeploymentGraphPlanner.ChangeClass>(changeClass);
+   var plan=await Deployment.CreateAsync(id,kind,p.Identity?.Name??"",reason);
+   selected=plan;message=plan.Blockers.Count>0
+    ?"Dry-run created; "+plan.Blockers.Count+" preflight blockers prevent approval or execution."
+    :"Dependency plan prepared for two independent approvals.";
+   error=plan.Blockers.Count>0;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private Task SelectPlanAsync(Guid id){
+  selected=plans.FirstOrDefault(x=>x.Id==id);return Task.CompletedTask;
+ }
+ private async Task ApproveAsync(Guid id){
+  try{
+   var p=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireApprover(p);
+   selected=await Deployment.ApproveAsync(id,p.Identity?.Name??"");
+   message=selected.State+"; no physical devices contacted.";error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SimulateAsync(Guid id){
+  try{
+   var p=(await Authentication.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   selected=await Deployment.RunSimulationAsync(id,p.Identity?.Name??"");
+   message=selected.State+" — SQL-only execution; no switch/AP REST writes.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+}
