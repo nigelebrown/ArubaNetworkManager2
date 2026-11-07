@@ -1,0 +1,437 @@
+@page "/onboarding"
+@attribute [Authorize]
+@using System.Net
+@using Jcf.NetworkManager.Workflow
+@inject IDbContextFactory<NetworkDbContext> Db
+@inject DeviceService DevicesService
+@inject CredentialVault Vault
+@inject EnterpriseOperationsService Operations
+@inject OnboardingDiscoveryService Discovery
+@inject AuthenticationStateProvider Authentication
+@inject NavigationManager Nav
+@inject IConfiguration Config
+
+<h1>Discover &amp; onboard devices</h1>
+<p class="lede">Follow the process from equipment identification to verified inventory. Network discovery and settings import are read-only. Configuration changes require a separate approval workflow.</p>
+<div class="wizard-steps" aria-label="Onboarding progress">
+    @for(var n=1;n<=8;n++)
+    {
+        var index=n;
+        <button class="wizard-step @(step==index?"current":step>index?"completed":"")"
+                disabled="@(index>step || working || !isOperator)" @onclick="()=>GoBackTo(index)">
+            <span>@index</span>@StepLabels[index-1]
+        </button>
+    }
+</div>
+@if(!isOperator)
+{
+    <div class="banner">You have read-only access. Ask a platform operator to start an onboarding session.</div>
+}
+else
+{
+    @if(!string.IsNullOrWhiteSpace(message))
+    {
+        <div class="banner @(error?"warn":"")" role="status">@message</div>
+    }
+    @if(step==1)
+    {
+        <section class="panel">
+            <h2>Step 1 — Choose the equipment to discover</h2>
+            <p class="muted">APs and switches use different management APIs and are onboarded separately. Choose one type per discovery batch.</p>
+            <div class="wizard-choices">
+                <button class="@(accessPoints?"":"secondary")" @onclick="()=>ChooseType(true)">Aruba Instant APs<br/><small>AP-505 / AP-535 · management port 4343</small></button>
+                <button class="@(accessPoints?"secondary":"")" @onclick="()=>ChooseType(false)">Aruba CX switches<br/><small>CX 6100 / CX 6200 · management port 443</small></button>
+            </div>
+            <p class="muted">Discovery checks TCP reachability only. It does not verify Aruba manufacturer, firmware, or exact model until you authenticate and read the device API.</p>
+        </section>
+    }
+    @if(step==2)
+    {
+        <section class="panel">
+            <h2>Step 2 — Select or create a credential profile</h2>
+            <p class="muted">Store credentials once and reuse the encrypted profile across a switch group or Instant cluster. Existing devices keep their saved profile unless you explicitly change it later.</p>
+            <div class="formgrid">
+                <label>Existing / new profile name
+                    <input @bind="credentialRef" list="onboarding-profiles" maxlength="40" placeholder="HQ_INSTANT or HQ_CX" />
+                    <datalist id="onboarding-profiles">@foreach(var p in profiles){<option value="@p.Reference" />}</datalist>
+                </label>
+                <label>Current profile status
+                    <span class="wizard-readonly">@ProfileStatus()</span>
+                </label>
+            </div>
+            <h3>Create or rotate an encrypted credential profile (optional for already-registered devices)</h3>
+            <div class="formgrid">
+                <label>Device API username<input @bind="newUsername" autocomplete="off" maxlength="128" /></label>
+                <label>Device API password<input type="password" @bind="newPassword" autocomplete="new-password" maxlength="256" /></label>
+            </div>
+            <button disabled="@working" @onclick="SaveProfileAsync">Save / rotate encrypted profile</button>
+            <p class="muted">Do not enter the application's jcfadmin login here. These are credentials on Aruba equipment. Passwords are never redisplayed.</p>
+        </section>
+    }
+    @if(step==3)
+    {
+        <section class="panel">
+            <h2>Step 3 — Discover a range, or select known equipment</h2>
+            <p class="muted">The scan is manually initiated, limited to 64 addresses per batch and restricted to the administrator-approved management subnets. No credentials are sent during this scan.</p>
+            <div class="formgrid">
+                <label>Starting IP<input @bind="scanStart" placeholder="10.101.10.1" /></label>
+                <label>Ending IP<input @bind="scanEnd" placeholder="10.101.10.64" /></label>
+            </div>
+            <div class="actionbar">
+                <button disabled="@working" @onclick="ScanAsync">Run read-only discovery</button>
+                <button class="secondary" disabled="@working" @onclick="LoadInventoryAsync">Use existing inventory (no scan)</button>
+            </div>
+            <h3>Or add a specific management IP</h3>
+            <div class="actionbar">
+                <input style="max-width:260px" @bind="manualIp" placeholder="Enter one management IP" />
+                <button class="secondary" disabled="@working" @onclick="AddManualAsync">Add IP for review</button>
+            </div>
+            <p class="muted">Authorized discovery subnets: @AllowedCidrs(). You can register only devices within these approved subnets. Adjust Jcf:AllowedManagementCidrs through controlled server configuration; the wizard does not silently expand network permissions.</p>
+            <p><b>Candidate count:</b> @candidates.Count</p>
+        </section>
+    }
+    @if(step==4)
+    {
+        <section class="panel">
+            <h2>Step 4 — Review discovered devices</h2>
+            @if(candidates.Count==0)
+            {
+                <p class="muted">No candidates yet. Go back and scan or select existing inventory.</p>
+            }
+            else
+            {
+                <div class="actionbar">
+                    <button class="secondary" @onclick="()=>SetAll(true)">Select all</button>
+                    <button class="secondary" @onclick="()=>SetAll(false)">Clear selection</button>
+                </div>
+                <table>
+                    <thead><tr><th>Include</th><th>Management IP</th><th>Device/API evidence</th><th>Current inventory</th></tr></thead>
+                    <tbody>
+                    @foreach(var c in candidates)
+                    {
+                        <tr>
+                            <td><input type="checkbox" @bind="c.Selected" aria-label="@("Select "+c.Ip)" /></td>
+                            <td><b>@c.Ip</b></td>
+                            <td>@c.DiscoveryStatus</td>
+                            <td>@(c.ExistingId is null?"NEW — registration required":"EXISTING — "+c.Name)</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+                <p class="muted">An open management port does not prove this is an Aruba device. Offline candidates can be registered manually, but API authentication must subsequently be verified.</p>
+            }
+        </section>
+    }
+    @if(step==5)
+    {
+        <section class="panel">
+            <h2>Step 5 — Confirm model, names and location</h2>
+            <p class="muted">Existing devices are prepopulated. For a new device, choose the exact model yourself; TCP discovery cannot reliably identify it.</p>
+            @foreach(var c in Selected())
+            {
+                <div class="wizard-candidate">
+                    <h3>@c.Ip <span class="chip @(c.ExistingId is null?"":"ok")">@(c.ExistingId is null?"New":"Existing")</span></h3>
+                    <div class="formgrid">
+                        <label>Display name<input @bind="c.Name" maxlength="120" /></label>
+                        <label>Equipment model
+                            <select @bind="c.Kind" disabled="@(c.ExistingId is not null)">
+                                @if(accessPoints)
+                                {
+                                    <option value="Ap505">Aruba AP-505</option>
+                                    <option value="Ap535">Aruba AP-535</option>
+                                }
+                                else
+                                {
+                                    <option value="Cx6100">Aruba CX 6100</option>
+                                    <option value="Cx6200">Aruba CX 6200</option>
+                                }
+                            </select>
+                        </label>
+                        <label>Physical location
+                            <select @bind="c.LocationString">
+                                <option value="">Unassigned — assign later</option>
+                                @foreach(var l in locations){<option value="@l.Id">@l.Name (@l.Type)</option>}
+                            </select>
+                        </label>
+                        @if(accessPoints)
+                        {
+                            <label>Instant VC / cluster name<input @bind="c.Cluster" maxlength="60" placeholder="Cluster or VC (optional)" /></label>
+                        }
+                    </div>
+                    @if(c.ExistingId is not null){<p class="muted">Existing profile: <b>@c.ExistingProfile</b>. Existing registration and settings are retained unless you select changes on the next step.</p>}
+                </div>
+            }
+            <p class="muted">To create a site/location, open <a href="/locations">Locations</a> in a separate tab, then restart this step to refresh its choices.</p>
+        </section>
+    }
+    @if(step==6)
+    {
+        <section class="panel">
+            <h2>Step 6 — Review and register</h2>
+            <p class="muted">Nothing is registered or altered until you select the confirmation button. Each change is recorded in the SQL-backed audit trail.</p>
+            <label class="wizard-inline"><input type="checkbox" @bind="updateExisting" /> Update names, credentials and placement of existing registrations (unchecked by default)</label>
+            <table><thead><tr><th>Management IP</th><th>Name</th><th>Model</th><th>Action</th><th>Result</th></tr></thead>
+                <tbody>@foreach(var c in Selected())
+                {
+                    <tr><td>@c.Ip</td><td>@c.Name</td><td>@c.Kind</td><td>@(c.ExistingId is null?"Register new":updateExisting?"Apply explicit inventory edits":"Keep existing")</td><td>@(c.DeviceId.HasValue?c.ActionOutcome:"Pending")</td></tr>
+                }</tbody>
+            </table>
+            <div class="actionbar">
+                <button disabled="@(working || Selected().Count==0)" @onclick="RegisterAsync">Confirm onboarding / inventory updates</button>
+            </div>
+            <p class="muted">This step changes only the application's inventory, not a device's running configuration. Device writes remain approval-gated.</p>
+        </section>
+    }
+    @if(step==7)
+    {
+        <section class="panel">
+            <h2>Step 7 — Import the current observed settings (read-only)</h2>
+            <p>Choose whether to authenticate against each device now. For supported API fields, the system stores a non-secret snapshot and firmware/health evidence in SQL.</p>
+            <div class="actionbar">
+                <button disabled="@working" @onclick="CaptureAsync">Import available non-secret settings now</button>
+                <button class="secondary" disabled="@working" @onclick="()=>{step=8;ClearMessage();}">Skip — import later</button>
+            </div>
+            <table><thead><tr><th>Device</th><th>Authentication / snapshot outcome</th></tr></thead><tbody>
+                @foreach(var c in Selected()){<tr><td>@c.Name</td><td>@(string.IsNullOrWhiteSpace(c.ImportOutcome)?"Not requested":c.ImportOutcome)</td></tr>}
+            </tbody></table>
+            <div class="banner">This is a <b>limited, non-secret configuration snapshot</b>, not a full Aruba running-config backup. Full import, backup and recovery require a separate vendor-API-certified implementation.</div>
+        </section>
+    }
+    @if(step==8)
+    {
+        <section class="panel">
+            <h2>Step 8 — Continue configuring now or later</h2>
+            <p>Registered devices are now managed in SQL inventory. Choose the next process; nothing will be automatically pushed to equipment.</p>
+            <div class="wizard-choices">
+                <a class="wizard-choice-link" href="@(accessPoints?"/ap-management":"/switches")">Configure @(accessPoints?"AP groups / WLAN / RF":"switch VLANs / ports") now</a>
+                <a class="wizard-choice-link" href="/configuration">Create configuration proposals</a>
+                <a class="wizard-choice-link" href="/changes">Review approvals and deployment gates</a>
+                <a class="wizard-choice-link" href="/devices">Finish for now — view managed inventory</a>
+            </div>
+            <div class="banner">No device configuration change has been executed by this wizard. Review and approval are required before any live change.</div>
+            <button class="secondary" @onclick="StartAnother">Onboard another batch</button>
+        </section>
+    }
+
+    <div class="wizard-footer">
+        <button class="secondary" disabled="@(step<=1 || working)" @onclick="Previous">Back</button>
+        <span>Step @step of 8 · @Selected().Count selected</span>
+        @if(step<6)
+        {
+            <button disabled="@working" @onclick="Next">Continue</button>
+        }
+        else if(step==6)
+        {
+            <button disabled="@(working || !Selected().Any(c=>c.DeviceId.HasValue))" @onclick="Next">Continue to import</button>
+        }
+        else if(step==7)
+        {
+            <button class="secondary" disabled="@working" @onclick="Next">Continue to configuration</button>
+        }
+    </div>
+}
+
+@code {
+    private static readonly string[] StepLabels={"Equipment","Credentials","Discovery","Review targets","Placement","Register","Import","Configure"};
+    private sealed class Candidate
+    {
+        public string Ip {get;set;}="";
+        public string DiscoveryStatus {get;set;}="";
+        public bool Selected {get;set;}
+        public Guid? ExistingId {get;set;}
+        public Guid? DeviceId {get;set;}
+        public string Name {get;set;}="";
+        public DeviceKind Kind {get;set;}=DeviceKind.Ap505;
+        public string LocationString {get;set;}="";
+        public string Cluster {get;set;}="";
+        public string ExistingProfile {get;set;}="";
+        public string ActionOutcome {get;set;}="";
+        public string ImportOutcome {get;set;}="";
+    }
+    private int step=1;
+    private bool isOperator,accessPoints=true,working,error,updateExisting;
+    private string credentialRef="",newUsername="",newPassword="",scanStart="",scanEnd="",manualIp="",message="";
+    private List<CredentialVault.CredentialView> profiles=[];
+    private List<Location> locations=[];
+    private List<Device> existing=[];
+    private List<Candidate> candidates=[];
+    private List<Candidate> Selected()=>candidates.Where(c=>c.Selected).ToList();
+    private string AllowedCidrs()=>string.Join(", ",Config.GetSection("Jcf:AllowedManagementCidrs").Get<string[]>()??[]) is string text && text.Length>0?text:"None configured";
+    private string ProfileStatus()
+    {
+        var c=profiles.FirstOrDefault(x=>x.Reference.Equals(credentialRef.Trim(),StringComparison.OrdinalIgnoreCase));
+        return c is null?"Not yet saved":c.Source;
+    }
+    protected override async Task OnInitializedAsync()
+    {
+        var user=(await Authentication.GetAuthenticationStateAsync()).User;
+        isOperator=JcfRoles.IsOperator(user);
+        await ReloadAsync();
+        if(Nav.Uri.Contains("switch",StringComparison.OrdinalIgnoreCase)) accessPoints=false;
+    }
+    private async Task ReloadAsync()
+    {
+        await using var db=await Db.CreateDbContextAsync();
+        existing=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+        locations=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+        profiles=await Vault.ListAsync();
+    }
+    private void ClearMessage(){message="";error=false;}
+    private void Fail(Exception ex){message=ex.Message;error=true;}
+    private void Ok(string text){message=text;error=false;}
+    private void ChooseType(bool ap)
+    {
+        accessPoints=ap;candidates.Clear();ClearMessage();
+        credentialRef=ap?"HQ_INSTANT":"HQ_CX";
+    }
+    private void GoBackTo(int index){if(index<step && index>=1){step=index;ClearMessage();}}
+    private void Previous(){if(step>1){step--;ClearMessage();}}
+    private void Next()
+    {
+        ClearMessage();
+        if(step==3 && candidates.Count==0){Ok("Run a scan, add a management IP, or load existing inventory before continuing.");return;}
+        if(step==4 && Selected().Count==0){Ok("Select at least one candidate.");return;}
+        if(step==5 && Selected().Any(x=>string.IsNullOrWhiteSpace(x.Name))){Ok("Every selected device needs a display name.");return;}
+        if(step==6 && !Selected().Any(x=>x.DeviceId.HasValue)){Ok("Confirm onboarding before continuing.");return;}
+        if(step<8)step++;
+    }
+    private async Task SaveProfileAsync()
+    {
+        working=true;
+        try{
+            var actor=await OperatorAsync();
+            await Vault.SetAsync(credentialRef,newUsername,newPassword,"Onboarding credential profile",actor);
+            newPassword="";newUsername="";
+            await ReloadAsync();Ok("Encrypted credential profile saved. No password is displayed or logged.");
+        }catch(Exception ex){Fail(ex);}finally{newPassword="";working=false;}
+    }
+    private async Task<string> OperatorAsync()
+    {
+        var user=(await Authentication.GetAuthenticationStateAsync()).User;
+        JcfRoles.RequireOperator(user);
+        return user.Identity?.Name??throw new UnauthorizedAccessException("Sign in again.");
+    }
+    private Candidate FromDevice(Device d,string status) => new()
+    {
+        Ip=d.ManagementIp,DiscoveryStatus=status,ExistingId=d.Id,Name=d.Name,Kind=d.Kind,
+        Cluster=d.ClusterName??"",LocationString=d.LocationId?.ToString()??"",ExistingProfile=d.SecretRef,
+        Selected=true
+    };
+    private void AddObserved(string ip,string status)
+    {
+        if(candidates.Any(x=>x.Ip==ip))return;
+        var known=existing.FirstOrDefault(x=>x.ManagementIp==ip);
+        if(known!=null)
+        {
+            if(known.IsAccessPoint==accessPoints)candidates.Add(FromDevice(known,status));
+        }
+        else
+        {
+            candidates.Add(new Candidate{Ip=ip,DiscoveryStatus=status,Selected=status.Contains("open"),
+                Name=(accessPoints?"NEW-AP-":"NEW-CX-")+ip.Replace(".","-"),
+                Kind=accessPoints?DeviceKind.Ap505:DeviceKind.Cx6100});
+        }
+    }
+    private async Task LoadInventoryAsync()
+    {
+        await ReloadAsync();
+        candidates=existing.Where(d=>d.IsAccessPoint==accessPoints).Take(64)
+            .Select(d=>FromDevice(d,d.IsSimulated?"Existing simulated record (no network scan)":"Existing registered device (no network scan)")).ToList();
+        Ok($"Loaded {candidates.Count} registered device(s) without contacting the network.");
+    }
+    private async Task AddManualAsync()
+    {
+        try
+        {
+            await OperatorAsync();
+            var ip=manualIp.Trim();
+            if(!AddressPolicy.IsAllowed(ip,Config.GetSection("Jcf:AllowedManagementCidrs").Get<string[]>()??[]))
+                throw new InvalidOperationException("Management IP must be in the approved Jcf:AllowedManagementCidrs list.");
+            if(candidates.Count>=OnboardingDiscoveryService.MaxAddresses)throw new InvalidOperationException("Maximum 64 candidates per batch.");
+            await ReloadAsync();
+            AddObserved(ip,"Manually entered — API status not checked");
+            manualIp="";Ok("Added management IP for review; device has not been contacted.");
+        }catch(Exception ex){Fail(ex);}
+    }
+    private async Task ScanAsync()
+    {
+        working=true;ClearMessage();
+        try{
+            await OperatorAsync();
+            await ReloadAsync();
+            var result=await Discovery.ScanAsync(scanStart.Trim(),scanEnd.Trim(),accessPoints);
+            candidates=[];
+            foreach(var obs in result)
+                AddObserved(obs.Address,obs.Reachable?$"TCP {obs.Port} open (vendor/model not verified)":$"TCP {obs.Port} not responding");
+            Ok($"Checked {result.Count} addresses; {result.Count(x=>x.Reachable)} responded on the selected management port. No credentials or configuration changes were sent.");
+        }catch(Exception ex){Fail(ex);}finally{working=false;}
+    }
+    private void SetAll(bool selected){foreach(var c in candidates)c.Selected=selected;}
+    private async Task RegisterAsync()
+    {
+        working=true;ClearMessage();
+        try
+        {
+            var actor=await OperatorAsync();
+            var stored=await Vault.ListAsync();
+            var profile=credentialRef.Trim().ToUpperInvariant();
+            if(Selected().Any(c=>c.ExistingId is null) && !stored.Any(p=>p.Reference==profile && p.Source=="Encrypted profile"))
+                throw new InvalidOperationException("New devices require a saved encrypted credential profile. Return to Step 2.");
+            var ok=0;var failed=0;
+            foreach(var c in Selected())
+            {
+                try
+                {
+                    var loc=Guid.TryParse(c.LocationString,out var parsed)?parsed:(Guid?)null;
+                    if(c.ExistingId is Guid id)
+                    {
+                        c.DeviceId=id;
+                        c.ActionOutcome="Existing registration kept";
+                        if(updateExisting && !existing.Any(d=>d.Id==id && d.IsSimulated))
+                        {
+                            var original=existing.Single(d=>d.Id==id);
+                            await DevicesService.UpdateAsync(id,c.Name,original.SecretRef,c.Cluster,actor);
+                            if(loc is Guid changed && loc!=original.LocationId)
+                                await Operations.PlaceAsync(id,changed,actor);
+                            c.ActionOutcome="Existing inventory updated";
+                        }
+                    }
+                    else
+                    {
+                        var registered=await DevicesService.RegisterAsync(c.Name,c.Kind,c.Ip,profile,loc,actor,default,c.Cluster);
+                        c.DeviceId=registered.Id;c.ActionOutcome="Registered (API not verified)";
+                    }
+                    ok++;
+                }
+                catch(Exception ex){c.ActionOutcome="Not registered: "+ex.Message;failed++;}
+            }
+            Ok($"Inventory review complete: {ok} succeeded, {failed} failed. Continue to read-only API import, or correct failed entries.");
+            await ReloadAsync();
+        }catch(Exception ex){Fail(ex);}finally{working=false;}
+    }
+    private async Task CaptureAsync()
+    {
+        working=true;ClearMessage();
+        try
+        {
+            var actor=await OperatorAsync();
+            foreach(var c in Selected().Where(x=>x.DeviceId.HasValue))
+            {
+                try
+                {
+                    var read=await DevicesService.ProbeAsync(c.DeviceId!.Value,actor);
+                    if(!read.Connected){c.ImportOutcome="API not authenticated: "+(read.Issue??"check credentials and TLS");continue;}
+                    var snap=await Operations.SnapshotAsync(c.DeviceId.Value,actor);
+                    c.ImportOutcome="Read-only snapshot saved "+snap.CapturedUtc.ToString("yyyy-MM-dd HH:mm")+" UTC; SHA-256 "+snap.DataSha256[..12];
+                }
+                catch(Exception ex){c.ImportOutcome="Import failed: "+ex.Message;}
+            }
+            Ok("Read-only import finished. Full vendor configuration backup is not included. No device settings changed.");
+        }catch(Exception ex){Fail(ex);}finally{working=false;}
+    }
+    private void StartAnother()
+    {
+        step=1;accessPoints=true;candidates=[];credentialRef="";newUsername="";newPassword="";
+        scanStart="";scanEnd="";manualIp="";updateExisting=false;ClearMessage();
+    }
+}
