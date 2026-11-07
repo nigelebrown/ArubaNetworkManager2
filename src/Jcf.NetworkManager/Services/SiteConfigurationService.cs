@@ -135,10 +135,17 @@ public sealed class SiteConfigurationService(IDbContextFactory<NetworkDbContext>
         await using var db=await factory.CreateDbContextAsync(ct);
         var device=await db.Devices.FindAsync([deviceId],ct)??throw new KeyNotFoundException("Device does not exist.");
         if(!await db.Locations.AnyAsync(l=>l.Id==locationId,ct))throw new KeyNotFoundException("Site not found.");
-        if(!await db.PolicyTemplates.AnyAsync(p=>p.Scope=="Site"&&p.LocationId==locationId,ct))
-            throw new InvalidOperationException("Create the site configuration group before assigning equipment.");
-        var group=await db.DeviceGroups.SingleOrDefaultAsync(g=>g.Kind==SiteGroupKind&&g.LocationId==locationId,ct)
-            ?? throw new InvalidOperationException("Site membership group missing; repair site configuration.");
+        // Site wizard onboards physical inventory BEFORE selecting a global template in Step 4.
+        // Create only the membership group here. Site and device desired policies remain unset
+        // until the operator explicitly chooses templates and reviews overrides.
+        var group=await db.DeviceGroups.SingleOrDefaultAsync(g=>g.Kind==SiteGroupKind&&g.LocationId==locationId,ct);
+        if(group is null)
+        {
+            group=new DeviceGroup{Name="SITE-"+locationId.ToString("N"),
+                Kind=SiteGroupKind,LocationId=locationId,
+                Notes="Membership only; configuration inheritance not yet assigned"};
+            db.DeviceGroups.Add(group);
+        }
         bool isCx=device.Kind is DeviceKind.Cx6100 or DeviceKind.Cx6200;
         if(isCx && physicalPortCount is not (24 or 48))
             throw new ArgumentException("CX 6100/6200 physical access-port count must be declared as 24 or 48.");
