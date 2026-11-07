@@ -29,9 +29,9 @@
  @if(plans.Count==0){<p class="muted">No plans created for this site.</p>}
  else{
   <table><thead><tr><th>Plan</th><th>Type</th><th>Equipment</th><th>Blockers</th><th>Status</th><th>Review</th></tr></thead><tbody>
-  @foreach(var plan in plans){
-   <tr><td>@plan.CreatedUtc.ToString("MM-dd HH:mm")</td><td>@plan.ChangeClass</td><td>@plan.Steps.Count</td>
-    <td>@plan.Blockers.Count</td><td>@plan.State</td><td><button class="secondary" @onclick="()=>SelectPlanAsync(plan.Id)">View plan</button></td></tr>
+  @foreach(var item in plans){
+   <tr><td>@item.CreatedUtc.ToString("MM-dd HH:mm")</td><td>@item.ChangeClass</td><td>@item.Steps.Count</td>
+    <td>@item.Blockers.Count</td><td>@item.State</td><td><button class="secondary" @onclick="()=>SelectPlanAsync(item.Id)">View plan</button></td></tr>
   }</tbody></table>
  }
  @if(selected is { } plan){
