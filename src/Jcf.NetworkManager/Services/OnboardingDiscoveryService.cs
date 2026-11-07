@@ -29,8 +29,9 @@ public sealed class OnboardingDiscoveryService(IConfiguration configuration)
         if(b<a || (ulong)b-a+1>MaxAddresses)
             throw new ArgumentException($"Scan up to {MaxAddresses} consecutive IPv4 addresses in one batch.");
         var result=new List<string>((int)((ulong)b-a+1));
-        for(uint n=a;n<=b;n++)
+        for(ulong index=a;index<=b;index++)
         {
+            var n=(uint)index;
             var value=Address(n).ToString();
             if(!AddressPolicy.IsAllowed(value,allowed))
                 throw new InvalidOperationException($"IP {value} is outside Jcf:AllowedManagementCidrs. An administrator must explicitly authorize that subnet before scanning.");
@@ -56,7 +57,7 @@ public sealed class OnboardingDiscoveryService(IConfiguration configuration)
                 using var tcp=new TcpClient(AddressFamily.InterNetwork);
                 try
                 {
-                    await tcp.ConnectAsync(IPAddress.Parse(address),port,ct).WaitAsync(Timeout,ct);
+                    await tcp.ConnectAsync(IPAddress.Parse(address),port,ct).AsTask().WaitAsync(Timeout,ct);
                     return new PortObservation(address,port,true);
                 }
                 catch(Exception ex) when(ex is SocketException or IOException or TimeoutException or OperationCanceledException)
