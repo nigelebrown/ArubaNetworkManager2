@@ -48,12 +48,25 @@
 </section>
 <section class="panel"><h2>Configuration execution lifecycle</h2><p>1. Create proposal → 2. Verify device/firmware and actual cluster scope → 3. Independent approval (two reviewers for ARM proposals) → 4. Preflight → 5. Lab-only execution when explicitly enabled → 6. Readback and recovery evidence.</p><p class="muted">Operations and analysis workers cannot approve or execute configuration actions.</p></section>
 @code {
+ [Parameter, SupplyParameterFromQuery(Name="deviceId")] public string? InitialDeviceId {get;set;}
  private List<Device> devices=new();private string targetId="",action="CreateSsid",ssid="JCF-LAB-WIFI",pskRef="LAB_WIFI",band="prefer-higher-band",vlanName="JCF_TEST",reason="Lab validation only",message="";
  private int vlan=120,power=9,channelWidth=20;
  private string clientMatch="enabled",channelPool="36,40,44,48,149,153,157,161",switchPort="1/1/1",portMode="access",poeState="enabled";
  private int? scope;private List<string> members=new();private Guid? scopeFor;
  private Device? Target=>Guid.TryParse(targetId,out var id)?devices.FirstOrDefault(d=>d.Id==id):null;
- protected override async Task OnInitializedAsync(){await using var db=await DbFactory.CreateDbContextAsync();devices=await db.Devices.AsNoTracking().Where(d=>d.Enabled).OrderBy(x=>x.Name).ToListAsync();}
+ protected override async Task OnInitializedAsync(){
+  await using var db=await DbFactory.CreateDbContextAsync();
+  devices=await db.Devices.AsNoTracking().Where(d=>d.Enabled).OrderBy(x=>x.Name).ToListAsync();
+  if(Guid.TryParse(InitialDeviceId,out var selected))
+  {
+    var matched=devices.FirstOrDefault(d=>d.Id==selected);
+    if(matched is not null)
+    {
+      targetId=matched.Id.ToString();
+      if(!matched.IsAccessPoint)action="CreateSwitchVlan";
+    }
+  }
+ }
  protected override async Task OnParametersSetAsync()=>await LoadScope();
  protected override async Task OnAfterRenderAsync(bool first){if(Target?.Id!=scopeFor){await LoadScope();StateHasChanged();}}
  private async Task LoadScope(){scopeFor=Target?.Id;scope=null;members=new();if(Target is not { IsAccessPoint: true } t)return;
