@@ -119,4 +119,51 @@ public sealed class TemplateCatalogServiceTests
         Assert.Throws<ArgumentException>(()=>TemplateCatalogService.NormalizeDefinition(
             new("Cx6200",48,"""{"switch":{"password":"abcd"}}""",Array.Empty<string>(),"")));
     }
+
+    [Fact]
+    public async Task Optimization_override_must_exactly_match_an_independently_approved_recommendation()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="RF Test Station"};
+        var ap=new Device{Name="AP505 RF",Kind=DeviceKind.Ap505,LocationId=site.Id,
+            ManagementIp="10.251.10.4",IsSimulated=true};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(site);db.Devices.Add(ap);await db.SaveChangesAsync();}
+        var template=await svc.CreateAsync("AP505 Standard",Ap(DeviceKind.Ap505),"admin");
+        await svc.AssignAsync(ap.Id,template.Id,"operator","RF site baseline review");
+        const string approved = """{"wireless":{"rfPowerMode":"fixed","fixedTxPowerDbm":9}}""";
+        var recommendation=new Recommendation {
+            DeviceId=ap.Id,State=RecommendationState.Approved,
+            Title="Fixed RF power",ProposedSetting=approved,ReviewedBy="rf-approver"
+        };
+        await using(var db=f.CreateDbContext())
+        {db.Recommendations.Add(recommendation);await db.SaveChangesAsync();}
+        await Assert.ThrowsAsync<InvalidOperationException>(()=>svc.AddApprovedOptimizationAsync(
+            ap.Id,"""{"wireless":{"rfPowerMode":"fixed","fixedTxPowerDbm":10}}""",
+            recommendation.Id,"operator","Different power than approval"));
+        await svc.AddApprovedOptimizationAsync(ap.Id,approved,recommendation.Id,
+            "operator","RF coverage correction approved");
+        var resolved=await svc.ResolveDeviceAsync(ap.Id);
+        Assert.Equal("O",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").Source);
+        Assert.Contains("9",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").ValueJson);
+        await using var verify=f.CreateDbContext();
+        Assert.Empty(await verify.ConfigExecutionEvents.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Retired_template_remains_resolvable_for_pinned_devices_without_accepting_new_assignments()
+    {
+        var(f,svc)=New();
+        var site=new Location{Name="Site R"};
+        var a=new Device{Name="AP",Kind=DeviceKind.Ap535,LocationId=site.Id,ManagementIp="10.251.20.4"};
+        var b=new Device{Name="AP2",Kind=DeviceKind.Ap535,LocationId=site.Id,ManagementIp="10.251.20.5"};
+        await using(var db=f.CreateDbContext())
+        {db.Locations.Add(site);db.Devices.AddRange(a,b);await db.SaveChangesAsync();}
+        var cat=await svc.CreateAsync("Legacy AP535",Ap(DeviceKind.Ap535),"admin");
+        await svc.AssignAsync(a.Id,cat.Id,"operator","Existing approved AP baseline");
+        await svc.RetireAsync(cat.Id,"admin","New profile supersedes legacy profile");
+        Assert.NotNull((await svc.ResolveDeviceAsync(a.Id)).Resolved);
+        await Assert.ThrowsAsync<KeyNotFoundException>(()=>svc.AssignAsync(
+            b.Id,cat.Id,"operator","New activation must use active template"));
+    }
 }
