@@ -166,6 +166,8 @@ builder.Services.AddScoped<CapabilityService>();
 builder.Services.AddScoped<EnterpriseOperationsService>();
 builder.Services.AddScoped<SiteConfigurationService>();
 builder.Services.AddScoped<TemplateCatalogService>();
+builder.Services.AddScoped<SiteWizardService>();
+builder.Services.AddScoped<ConfigurationImportService>();
 builder.Services.AddScoped<NetworkDiagnosticsService>();
 builder.Services.AddScoped<IncidentService>();
 builder.Services.AddScoped<AlertService>();
@@ -287,6 +289,35 @@ api.MapGet("/alerts",async(IDbContextFactory<NetworkDbContext> dbf)=>{
     return await db.NetworkAlerts.AsNoTracking().OrderByDescending(x=>x.LastSeenUtc).Take(150).ToListAsync();
 });
 app.MapEnterpriseApis(identityEnabled:!demo);
+if(!demo)
+{
+    // Downloading a recoverable full configuration returns secrets; HTTPS, Admin RBAC,
+    // explicit audit reason, no-cache headers, and the original encrypted key ring are mandatory.
+    app.MapGet("/api/v1/recovery/{id:guid}/download",
+        async(Guid id,string? purpose,HttpContext context,ConfigurationImportService service,
+            System.Threading.CancellationToken ct)=>{
+            if(context.Request.Scheme!="https" || service.FullRecoveryRequiresTls)
+                return Results.Problem("Full recovery export requires HTTPS.",statusCode:403);
+            if(string.IsNullOrWhiteSpace(purpose) || purpose.Length<10)
+                return Results.BadRequest(new{error="An audited 10-character recovery purpose is required."});
+            var actor=context.User.Identity?.Name??"";
+            try
+            {
+                var recovered=await service.RecoverAsync(id,actor,purpose,ct);
+                context.Response.Headers.CacheControl="no-store";
+                context.Response.Headers.Pragma="no-cache";
+                context.Response.Headers["X-Content-Type-Options"]="nosniff";
+                var filename="JCF-Recovery-"+recovered.Manifest.DeviceId.ToString("N")+
+                    "-"+recovered.Manifest.Id.ToString("N")+".cfg";
+                return Results.File(recovered.RawBytes,"application/octet-stream",filename);
+            }
+            catch(KeyNotFoundException){return Results.NotFound();}
+            catch(InvalidOperationException){return Results.Problem(
+                "Recovery verification failed. Check encrypted backup storage and key ring.",
+                statusCode:409);}
+        }).RequireAuthorization("Admin");
+}
+
 api.MapGet("/radio-policy",()=>new {approvedWidthsMhz=NetworkChangePolicy.ApprovedWidthsMhz,
     permittedNonDfsChannels5Ghz=NetworkChangePolicy.PreferredNonDfs5GhzChannels,
     excludedDfsChannels5Ghz=NetworkChangePolicy.ExcludedDfs5GhzChannels});
