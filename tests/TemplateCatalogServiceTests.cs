@@ -135,6 +135,9 @@ public sealed class TemplateCatalogServiceTests
         {db.Locations.Add(site);db.Devices.Add(ap);await db.SaveChangesAsync();}
         var template=await svc.CreateAsync("AP505 Standard",Ap(DeviceKind.Ap505),"admin");
         await svc.AssignAsync(ap.Id,template.Id,"operator","RF site baseline review");
+        await svc.SetDeviceOverrideAsync(ap.Id,
+            """{"wireless":{"minTxPowerDbm":7}}""","device-engineer",
+            "Individual AP coverage adjustment");
         const string approved = """{"wireless":{"rfPowerMode":"fixed","fixedTxPowerDbm":9}}""";
         var recommendation=new Recommendation {
             DeviceId=ap.Id,State=RecommendationState.Approved,
@@ -149,6 +152,10 @@ public sealed class TemplateCatalogServiceTests
             "operator","RF coverage correction approved");
         var resolved=await svc.ResolveDeviceAsync(ap.Id);
         Assert.Equal("O",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").Source);
+        Assert.Equal("operator",resolved.Resolved.Settings.Single(
+            x=>x.Path=="wireless.fixedTxPowerDbm").Author);
+        Assert.Equal("device-engineer",resolved.Resolved.Settings.Single(
+            x=>x.Path=="wireless.minTxPowerDbm").Author);
         Assert.Contains("9",resolved.Resolved.Settings.Single(x=>x.Path=="wireless.fixedTxPowerDbm").ValueJson);
         await using var verify=f.CreateDbContext();
         Assert.Empty(await verify.ConfigExecutionEvents.ToListAsync());
