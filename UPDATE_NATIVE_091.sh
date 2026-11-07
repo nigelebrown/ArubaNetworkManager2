@@ -24,7 +24,8 @@ curl -fsSLo "$ROOT_INSTALL" \
 bash -n "$ROOT_INSTALL" || die 'Downloaded installer failed syntax check'
 RESTORE=1
 rollback(){
-  if [[ "$RESTORE" == 1 ]]; then
+  local exit_code=$?
+  if [[ "$RESTORE" == 1 && $exit_code -ne 0 ]]; then
     say 'Restoring previous native release and restarting service.'
     ln -sfn "$OLD" "$ROOT/prepared.rollback"
     mv -Tf "$ROOT/prepared.rollback" "$PREPARED"
@@ -32,7 +33,7 @@ rollback(){
     say 'Old release path restored; inspect the service before reuse.'
   fi
 }
-trap rollback ERR
+trap rollback EXIT
 say 'Pulling latest source, rebuilding and running all offline tests; existing service is unchanged until successful build.'
 bash "$ROOT_INSTALL" prepare
 NEW="$(readlink -f "$PREPARED")"
@@ -53,7 +54,7 @@ curl -fsS --max-time 5 http://127.0.0.1:5181/healthz | \
  python3 -c 'import json,sys;x=json.load(sys.stdin);assert x["version"]=="0.9.1" and x["demo"] is False and x["status"]=="up"' ||
  die 'New application failed health/version check. Triggering rollback.'
 RESTORE=0
-trap - ERR
+trap - EXIT
 say "SUCCESS: updated v0.9.1 source, from $OLD to $NEW"
 say 'AP management console: http://172.17.71.20/ap-management (if restricted HTTP proxy has been activated).'
 say 'No SQL users, data, key rings, devices, Nginx, firewall or Docker configuration changed.'
