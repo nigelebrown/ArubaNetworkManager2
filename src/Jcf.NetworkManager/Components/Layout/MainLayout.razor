@@ -4,28 +4,62 @@
 <div class="app">
     <aside class="sidebar">
         <div class="identity"><span class="eyebrow">JCF · TECHNOLOGY BRANCH</span><strong>Intelligent Network Manager</strong><small>On-premises operations workspace</small></div>
-        <nav aria-label="Application navigation">
-            <NavLink href="/" Match="NavLinkMatch.All">Overview</NavLink>
-            <NavLink href="/devices">Devices & API discovery</NavLink>
-            <NavLink href="/topology">Topology & placement</NavLink>
-            <NavLink href="/operations">Operations & compliance</NavLink>
-            <NavLink href="/locations">Locations & groups</NavLink>
-            <NavLink href="/groups">AP groups & target locations</NavLink>
-            <NavLink href="/ap-management">AP management console</NavLink>
-            <NavLink href="/wlan-profiles">WLAN profiles & ARM policy</NavLink>
-            <NavLink href="/wireless">Wireless, RF & ARM</NavLink>
-            <NavLink href="/client-experience">Client experience & RF</NavLink>
-            <NavLink href="/switches">Switches & VLANs</NavLink>
-            <NavLink href="/configuration">Configuration proposals</NavLink>
-            <NavLink href="/changes">Approvals & execution</NavLink>
-            <NavLink href="/capabilities">API capability matrix</NavLink>
-            <NavLink href="/alerts">Alerts & telemetry</NavLink>
-            <NavLink href="/recommendations">Optimization & approvals</NavLink>
-            <NavLink href="/kiosk">Executive rotating display</NavLink>
-            <NavLink href="/audit">Change & audit history</NavLink>
-            <AuthorizeView Roles="PlatformAdmin"><NavLink href="/admin/users">Administration</NavLink></AuthorizeView>
-            @if(!Config.GetValue<bool>("Jcf:DemoMode")){<NavLink href="/account/password">Change password</NavLink>}
-            @if(!Config.GetValue<bool>("Jcf:DemoMode")){<NavLink href="/account/logout">Sign out</NavLink>}
+        <nav aria-label="Application navigation" class="process-nav">
+            <NavLink href="/" Match="NavLinkMatch.All" class="primary-link">Overview</NavLink>
+            <NavLink href="/onboarding" class="primary-link start-link">Start device onboarding</NavLink>
+            <details class="navgroup" open="@IsSection("onboard")">
+                <summary>Discover &amp; onboard</summary>
+                <div class="navchildren">
+                    <NavLink href="/onboarding?type=ap">Discover access points</NavLink>
+                    <NavLink href="/onboarding?type=switch">Discover switches</NavLink>
+                    <NavLink href="/devices">Managed device inventory</NavLink>
+                    <NavLink href="/credentials">Credential profiles</NavLink>
+                    <NavLink href="/locations">Locations / sites</NavLink>
+                </div>
+            </details>
+            <details class="navgroup" open="@IsSection("configure")">
+                <summary>Configure &amp; standardize</summary>
+                <div class="navchildren">
+                    <NavLink href="/groups">Device groups</NavLink>
+                    <NavLink href="/wlan-profiles">WLAN / RF templates</NavLink>
+                    <NavLink href="/ap-management">AP configuration</NavLink>
+                    <NavLink href="/switches">CX switch / VLAN settings</NavLink>
+                    <NavLink href="/configuration">Configuration proposals</NavLink>
+                </div>
+            </details>
+            <details class="navgroup" open="@IsSection("monitor")">
+                <summary>Monitor &amp; optimize</summary>
+                <div class="navchildren">
+                    <NavLink href="/topology">Topology / placement</NavLink>
+                    <NavLink href="/operations">Operations / compliance</NavLink>
+                    <NavLink href="/wireless">Wireless / ARM</NavLink>
+                    <NavLink href="/client-experience">Client experience</NavLink>
+                    <NavLink href="/alerts">Alerts / telemetry</NavLink>
+                    <NavLink href="/recommendations">Optimization</NavLink>
+                    <NavLink href="/kiosk">Executive dashboard</NavLink>
+                </div>
+            </details>
+            <details class="navgroup" open="@IsSection("governance")">
+                <summary>Approvals &amp; audit</summary>
+                <div class="navchildren">
+                    <NavLink href="/changes">Approve / execute changes</NavLink>
+                    <NavLink href="/capabilities">API capability evidence</NavLink>
+                    <NavLink href="/audit">Change / audit history</NavLink>
+                    <AuthorizeView Roles="PlatformAdmin">
+                        <NavLink href="/admin/users">Manage operators</NavLink>
+                    </AuthorizeView>
+                </div>
+            </details>
+            @if(!Config.GetValue<bool>("Jcf:DemoMode"))
+            {
+                <details class="navgroup" open="@IsSection("account")">
+                    <summary>My account</summary>
+                    <div class="navchildren">
+                        <a href="/account/password">Change password</a>
+                        <a href="/account/logout">Sign out</a>
+                    </div>
+                </details>
+            }
         </nav>
         <AuthorizeView><Authorized><div class="whoami"><small>Signed in as</small><strong>@context.User.Identity?.Name</strong>
             <small>@string.Join(", ",JcfRoles.All.Where(context.User.IsInRole))</small></div></Authorized></AuthorizeView>
@@ -40,6 +74,21 @@
 
 @code {
     private bool writes => Jcf.NetworkManager.Workflow.DeviceWritePolicy.From(Config).Enabled;
+    private bool IsSection(string section)
+    {
+        var path=new Uri(Nav.Uri).AbsolutePath.ToLowerInvariant();
+        return section switch
+        {
+            "onboard" => path.StartsWith("/onboarding") || path.StartsWith("/devices") ||
+                         path.StartsWith("/credentials") || path.StartsWith("/locations"),
+            "configure" => new[]{"/groups","/wlan-profiles","/ap-management","/switches","/configuration"}.Any(path.StartsWith),
+            "monitor" => new[]{"/topology","/operations","/wireless","/client-experience","/alerts",
+                               "/recommendations","/kiosk"}.Any(path.StartsWith),
+            "governance" => new[]{"/changes","/capabilities","/audit","/admin"}.Any(path.StartsWith),
+            "account" => path.StartsWith("/account"),
+            _ => false
+        };
+    }
     private ErrorBoundary? boundary;
     protected override void OnParametersSet() => boundary?.Recover();
     private void Recover() => boundary?.Recover();
