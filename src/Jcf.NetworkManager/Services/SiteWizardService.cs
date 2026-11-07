@@ -129,6 +129,34 @@ public sealed class SiteWizardService(IDbContextFactory<NetworkDbContext> factor
             .Select(x=>x.NonSecretJson).SingleOrDefaultAsync(ct);
         return value is null?null:JsonSerializer.Deserialize<Progress>(value);
     }
+    public async Task<TopologyLink> ConfirmObservedLinkAsync(Guid linkId,string actor,
+        string reason,CancellationToken ct=default)
+    {
+        actor=Actor(actor);
+        if(string.IsNullOrWhiteSpace(reason)||reason.Trim().Length<10||reason.Length>180)
+            throw new ArgumentException("Explain the manual topology verification (10–180 characters).");
+        await using var db=await factory.CreateDbContextAsync(ct);
+        var link=await db.TopologyLinks.SingleOrDefaultAsync(x=>x.Id==linkId,ct)
+            ??throw new KeyNotFoundException("No observed topology link found.");
+        if(link.NeighborDeviceId is not Guid peer || link.DeviceId==peer ||
+            string.IsNullOrWhiteSpace(link.LocalPort)||string.IsNullOrWhiteSpace(link.NeighborPort))
+            throw new InvalidOperationException("Link endpoints and interface identifiers must be known before confirmation.");
+        var a=await db.Devices.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==link.DeviceId,ct);
+        var b=await db.Devices.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==peer,ct);
+        if(a is null||b is null || a.LocationId is null || b.LocationId is null ||
+           a.LocationId!=b.LocationId)
+            throw new InvalidOperationException("Both confirmed endpoints must exist in the same site inventory.");
+        if(link.ObservedUtc<DateTime.UtcNow.AddDays(-7))
+            throw new InvalidOperationException("Stale topology evidence: refresh device discovery first.");
+        if(link.Evidence=="Confirmed")return link;
+        var old=link.Evidence;
+        link.Evidence="Confirmed";
+        db.AuditEvents.Add(new AuditEvent {Actor=actor,Action="Confirm topology link",
+            Target=link.Id.ToString("N"),Outcome="From "+old+"; "+reason.Trim()[..Math.Min(80,reason.Trim().Length)]});
+        await db.SaveChangesAsync(ct);
+        return link;
+    }
+
     public async Task<Status> ReviewAsync(Guid siteId,CancellationToken ct=default)
     {
         await using var db=await factory.CreateDbContextAsync(ct);
