@@ -1,0 +1,99 @@
+@page "/configuration-variance"
+@attribute [Authorize]
+@inject ConfigurationVarianceService Variances
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject AuthenticationStateProvider Authentication
+
+<h1>Configuration Variance, Provenance &amp; Reporting</h1>
+<p class="lede">Compare JCF global standards, site settings, device exceptions, approved optimization and observed/imported evidence. Export the same review to CSV, Excel or PDF.</p>
+<div class="banner">A missing or uncertified observation is UNKNOWN—not compliant. The exclamation (!) drift indicator requires specifically certified, fresh readback; a manually imported legacy configuration is not proof of current running state. Reports are audit evidence, not permission to write to a switch or AP.</div>
+<section class="panel">
+ <div class="formgrid">
+  <label>Site filter<select @bind="siteId" @bind:after="RefreshAsync"><option value="">All registered sites</option>
+   @foreach(var site in sites){<option value="@site.Id.ToString()">@site.Name (@site.Type)</option>}
+  </select></label>
+  <label>Indicator<select @bind="sourceFilter">
+    <option value="">All provenance/variance</option>
+    <option value="G">G — global inherited</option>
+    <option value="S">S — site overrides</option>
+    <option value="D">D — device overrides</option>
+    <option value="O">O — approved optimization</option>
+    <option value="I">I — imported</option>
+    <option value="!">! — certified drift</option>
+    <option value="P">P — pending change</option>
+  </select></label>
+  <label>Changed settings only<select @bind="changedOnly"><option value="false">All</option><option value="true">Overrides, pending and drift only</option></select></label>
+  <label>Evidence<select @bind="qualityFilter"><option value="">All evidence</option>
+   <option value="Verified drift">Verified drift</option>
+   <option value="Uncertified observation">Uncertified reading</option>
+   <option value="Not observed">No observation</option>
+  </select></label>
+ </div>
+ <button class="secondary" @onclick="RefreshAsync">Refresh SQL configuration comparison</button>
+ @if(report is { } loaded){
+ <div class="arm-grid">
+  <div><small>Devices</small><strong>@loaded.Devices</strong></div>
+  <div><small>Verified drift findings</small><strong>@loaded.DriftFindings</strong></div>
+  <div><small>Pending changes</small><strong>@loaded.PendingChanges</strong></div>
+  <div><small>Unknown measurements</small><strong>@loaded.UnknownMeasurements</strong></div>
+ </div>
+ }
+</section>
+<section class="panel">
+ <h2>Global / site / device / optimization / actual</h2>
+ @if(report is null){<p class="muted">No configuration report loaded.</p>}
+ else if(Visible.Count==0){<p class="muted">No rows match the selected filters.</p>}
+ else{
+ <p><b>@Visible.Count</b> settings shown · @report.GeneratedUtc.ToString("yyyy-MM-dd HH:mm") UTC.</p>
+ <div style="overflow-x:auto">
+ <table><thead><tr><th>Device</th><th>Property</th><th>Global</th><th>Site</th><th>Device</th><th>Optimization</th><th>Desired</th><th>Actual</th><th>Source</th><th>Indicator</th><th>Evidence</th></tr></thead><tbody>
+ @foreach(var row in Visible.Take(400)){
+  <tr><td>@row.Device</td><td>@row.Setting</td><td>@row.Global</td>
+   <td>@row.SiteValue</td><td>@row.DeviceValue</td><td>@row.Optimization</td>
+   <td>@row.Effective</td><td>@row.Actual</td><td>@row.Source</td>
+   <td><strong>@row.Indicator</strong></td><td>@row.Quality</td></tr>
+ }
+ </tbody></table>
+ </div>
+ @if(Visible.Count>400){<p class="muted">On-screen table limited to 400 rows for performance. Download the complete report.</p>}
+ }
+</section>
+<section class="panel">
+ <h2>Export configuration report</h2>
+ <p>CSV, XLSX and PDF exports contain the same approved desired/evidence-quality records. They do not contain encrypted running-config backups, Wi-Fi keys or device management credentials.</p>
+ @if(isOperator && Guid.TryParse(siteId,out var id)){
+ <div class="actionbar">
+  <a href="@ExportUrl(id,"csv")">Download CSV</a>
+  <a href="@ExportUrl(id,"xlsx")">Download Excel (.xlsx)</a>
+  <a href="@ExportUrl(id,"pdf")">Download PDF</a>
+ </div>
+ }else{
+ <p class="muted">Choose a site and sign in with operator privileges to download reports.</p>
+ }
+</section>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+@code{
+ private List<Location> sites=new();
+ private ConfigurationVarianceService.Report? report;
+ private string siteId="",sourceFilter="",changedOnly="false",qualityFilter="",message="";
+ private bool isOperator,error;
+ private List<ConfigurationVarianceService.Row> Visible=>
+   report?.Rows.Where(x=>
+      (sourceFilter.Length==0||x.Indicator==sourceFilter||sourceFilter=="O"&&x.Source=="O") &&
+      (changedOnly=="false"||x.Source!="G"||x.Indicator is "!" or "P") &&
+      (qualityFilter.Length==0||x.Quality==qualityFilter)).ToList()??new();
+ protected override async Task OnInitializedAsync(){
+  isOperator=JcfRoles.IsOperator((await Authentication.GetAuthenticationStateAsync()).User);
+  await using(var db=await DbFactory.CreateDbContextAsync()){
+   sites=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  }
+  await RefreshAsync();
+ }
+ private async Task RefreshAsync(){
+  try{
+   report=await Variances.BuildAsync(Guid.TryParse(siteId,out var id)?id:null);
+   message="Comparison generated. Only certified observations can produce confirmed drift.";error=false;
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private static string ExportUrl(Guid id,string format)=>"/api/v1/reports/variance/"+id.ToString("D")+"/"+format;
+}
