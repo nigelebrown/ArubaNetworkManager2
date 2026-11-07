@@ -18,8 +18,7 @@ public sealed class SiteConfigurationPolicyTests
     [Fact]
     public void Site_inherits_all_global_settings_and_replaces_only_explicit_override_keys()
     {
-        const string overrides="""{"switch":{"dataVlan":110,"allowedVlans":[100,110,200,300]},
-                                  "wireless":{"clientMatch":"disabled"}}""";
+        const string overrides="""{"switch":{"dataVlan":110,"allowedVlans":[100,110,200,300]},"wireless":{"clientMatch":"disabled"}}""";
         var resolved=SiteConfigurationPolicy.Resolve(Global,overrides);
         using var doc=JsonDocument.Parse(resolved);
         var sw=doc.RootElement.GetProperty("switch");
