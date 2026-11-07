@@ -159,6 +159,7 @@ builder.Services.AddSingleton<IDeviceConnector,InstantConnector>();
 builder.Services.AddSingleton<IDeviceConnector,CxConnector>();
 builder.Services.AddSingleton<IDeviceConnector,DemoConnector>();
 builder.Services.AddScoped<DeviceService>();
+builder.Services.AddScoped<OnboardingDiscoveryService>();
 builder.Services.AddScoped<HardwareAcceptanceService>();
 builder.Services.AddScoped<AnalysisService>();
 builder.Services.AddScoped<ChangeWorkflowService>();
