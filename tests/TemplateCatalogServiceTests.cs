@@ -20,9 +20,10 @@ public sealed class TemplateCatalogServiceTests
     }
     static TemplateCatalogService.Definition Switch(DeviceKind kind,int ports,int vlan=100,string lldp="tx-rx")
         =>new(kind.ToString(),ports,
-        """{"switch":{"dataVlan":""" + vlan +
-        ""","voiceVlan":200,"managementVlan":300,"nativeVlan":100,"allowedVlans":[100,200,300,400,500],"lldpMode":""""+
-        lldp+""""}}""",new[]{"switch.managementVlan"},"Standard switch ports");
+        System.Text.Json.JsonSerializer.Serialize(new { @switch = new {
+            dataVlan=vlan,voiceVlan=200,managementVlan=300,nativeVlan=100,
+            allowedVlans=new[]{100,200,300,400,500},lldpMode=lldp
+        }}),new[]{"switch.managementVlan"},"Standard switch ports");
     static TemplateCatalogService.Definition Ap(DeviceKind kind)
         =>new(kind.ToString(),null,
         """{"wireless":{"width24GhzMhz":20,"width5GhzMhz":20,"dfsEnabled":false,"minTxPowerDbm":6,"maxTxPowerDbm":12}}""",
