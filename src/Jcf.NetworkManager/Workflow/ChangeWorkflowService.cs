@@ -87,6 +87,10 @@ public sealed class ChangeWorkflowService(IDbContextFactory<NetworkDbContext> fa
             throw new InvalidOperationException("Approval expired; revalidate and approve again.");
         var device=await db.Devices.FindAsync([p.DeviceId],ct) ?? throw new KeyNotFoundException("Device not found.");
         NetworkChangePolicy.CheckModel(device,p.Action);
+        // No firmware-certified Aruba write/readback/rollback adapter for these new planning controls.
+        // They may be approval-tested against simulated devices, but NEVER executed on live equipment.
+        if(!device.IsSimulated && ApProfilePolicy.ProposalOnly(p.Action))
+            throw new InvalidOperationException("This WLAN/RF feature is proposal-only on real APs until firmware-certified readback and rollback tests pass.");
         if(!device.Enabled) throw new InvalidOperationException("Device administratively disabled.");
         if(p.BaselineFirmware!=device.Firmware) throw new InvalidOperationException("Firmware drift since proposal; re-probe and resubmit.");
         // Gates follow the TARGET, not the deployment mode: a sample (simulated) device only ever reaches the simulation
