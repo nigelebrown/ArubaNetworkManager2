@@ -147,6 +147,9 @@ else
                                 }
                             </select>
                         </label>
+                        <label>Credential profile
+                            <input @bind="c.ProfileRef" list="onboarding-profiles" maxlength="40" placeholder="Approved API credential profile" />
+                        </label>
                         <label>Physical location
                             <select @bind="c.LocationString">
                                 <option value="">Unassigned — assign later</option>
@@ -245,6 +248,7 @@ else
         public string LocationString {get;set;}="";
         public string Cluster {get;set;}="";
         public string ExistingProfile {get;set;}="";
+        public string ProfileRef {get;set;}="";
         public string ActionOutcome {get;set;}="";
         public string ImportOutcome {get;set;}="";
     }
@@ -326,6 +330,7 @@ else
     {
         Ip=d.ManagementIp,DiscoveryStatus=status,ExistingId=d.Id,Name=d.Name,Kind=d.Kind,
         Cluster=d.ClusterName??"",LocationString=d.LocationId?.ToString()??"",ExistingProfile=d.SecretRef,
+        ProfileRef=d.SecretRef,
         Selected=true
     };
     private void AddObserved(string ip,string status)
@@ -340,7 +345,7 @@ else
         {
             candidates.Add(new Candidate{Ip=ip,DiscoveryStatus=status,Selected=status.Contains("open"),
                 Name=(accessPoints?"NEW-AP-":"NEW-CX-")+ip.Replace(".","-"),
-                Kind=accessPoints?DeviceKind.Ap505:DeviceKind.Cx6100});
+                Kind=accessPoints?DeviceKind.Ap505:DeviceKind.Cx6100,ProfileRef=credentialRef.Trim().ToUpperInvariant()});
         }
     }
     private async Task LoadInventoryAsync()
@@ -385,14 +390,16 @@ else
         {
             var actor=await OperatorAsync();
             var stored=await Vault.ListAsync();
-            var profile=credentialRef.Trim().ToUpperInvariant();
-            if(Selected().Any(c=>c.ExistingId is null) && !stored.Any(p=>p.Reference==profile && p.Source=="Encrypted profile"))
-                throw new InvalidOperationException("New devices require a saved encrypted credential profile. Return to Step 2.");
+            foreach(var c in Selected().Where(c=>c.ExistingId is null || updateExisting))
+                if(!stored.Any(p=>p.Reference.Equals(c.ProfileRef.Trim(),StringComparison.OrdinalIgnoreCase) && p.Source=="Encrypted profile") &&
+                   !(c.ExistingId is not null && c.ProfileRef.Equals(c.ExistingProfile,StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException($"Credential profile {c.ProfileRef} is not stored. Create it under Step 2 or Credentials before registering.");
             var ok=0;var failed=0;
             foreach(var c in Selected())
             {
                 try
                 {
+                    if(c.DeviceId is not null){c.ActionOutcome="Already processed — no duplicate registration";ok++;continue;}
                     var loc=Guid.TryParse(c.LocationString,out var parsed)?parsed:(Guid?)null;
                     if(c.ExistingId is Guid id)
                     {
@@ -401,7 +408,7 @@ else
                         if(updateExisting && !existing.Any(d=>d.Id==id && d.IsSimulated))
                         {
                             var original=existing.Single(d=>d.Id==id);
-                            await DevicesService.UpdateAsync(id,c.Name,original.SecretRef,c.Cluster,actor);
+                            await DevicesService.UpdateAsync(id,c.Name,c.ProfileRef,c.Cluster,actor);
                             if(loc is Guid changed && loc!=original.LocationId)
                                 await Operations.PlaceAsync(id,changed,actor);
                             c.ActionOutcome="Existing inventory updated";
@@ -409,7 +416,7 @@ else
                     }
                     else
                     {
-                        var registered=await DevicesService.RegisterAsync(c.Name,c.Kind,c.Ip,profile,loc,actor,default,c.Cluster);
+                        var registered=await DevicesService.RegisterAsync(c.Name,c.Kind,c.Ip,c.ProfileRef,loc,actor,default,c.Cluster);
                         c.DeviceId=registered.Id;c.ActionOutcome="Registered (API not verified)";
                     }
                     ok++;
