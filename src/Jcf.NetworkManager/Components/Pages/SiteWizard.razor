@@ -1,0 +1,332 @@
+@page "/site-wizard"
+@attribute [Authorize]
+@inject IDbContextFactory<NetworkDbContext> DbFactory
+@inject SiteWizardService Wizard
+@inject SiteConfigurationService Sites
+@inject TemplateCatalogService Catalog
+@inject DeviceService DeviceProbe
+@inject AuthenticationStateProvider Auth
+
+<h1>Guided Site Configuration Wizard</h1>
+<p class="lede">Nine-step JCF site onboarding, equipment inventory and independently reviewed configuration workflow. The wizard never resets or writes to existing APs and switches.</p>
+<div class="banner">This is a SQL-backed workflow. Read-only probes are explicit. Site settings, global template assignments and device changes are desired state until a separate approved deployment is successfully verified. Unsupported real-hardware writes remain blocked.</div>
+<section class="panel">
+ <div class="formgrid">
+ <label>Choose an existing site or create a new one
+ <select @bind="siteId" @bind:after="SiteChangedAsync">
+  <option value="">Create a new site...</option>
+  @foreach(var location in sites){<option value="@location.Id.ToString()">@location.Name (@location.Type)</option>}
+ </select></label>
+ <label>Wizard step
+ <select @bind="step"><option value="1">1. Site details</option><option value="2">2. Add/discover devices</option>
+ <option value="3">3. Verify topology</option><option value="4">4. Assign global templates</option>
+ <option value="5">5. Site overrides</option><option value="6">6. Device overrides</option>
+ <option value="7">7. Review and validate</option><option value="8">8. Approval/deployment plan</option>
+ <option value="9">9. Verification and audit</option></select></label>
+ </div>
+ <div class="actionbar">
+ <button class="secondary" disabled="@(step==1)" @onclick="PreviousAsync">Previous step</button>
+ <button class="secondary" disabled="@(step==9)" @onclick="NextAsync">Save progress and next</button>
+ </div>
+ @if(status is not null){
+  <p><b>@status.SiteName</b> · @status.Devices devices · @status.TemplatesAssigned globally templated · @status.ConfirmedLinks confirmed links · @status.UncertainLinks uncertain links.</p>
+  @if(status.Blockers.Count>0){<ul>@foreach(var blocker in status.Blockers){<li>@blocker</li>}</ul>}
+ }
+</section>
+
+@if(step==1)
+{
+ <section class="panel">
+ <h2>Step 1 — Create site and register physical formation</h2>
+ <div class="formgrid">
+  <label>Site code<input @bind="code" maxlength="24" placeholder="JCF-STA-001"/></label>
+  <label>Site name<input @bind="name" maxlength="120" placeholder="Example Station"/></label>
+  <label>Site type<select @bind="type"><option>Station</option><option>HQ</option><option>Division</option><option>Branch</option><option>Area</option><option>Building</option><option>Zone</option></select></label>
+  <label>Formation / command<input @bind="formation" maxlength="120" placeholder="Division or Branch"/></label>
+  <label>Street/site address<input @bind="address" maxlength="200"/></label>
+  <label>Buildings (semicolon separated)<input @bind="buildings" placeholder="Main Building; Annexe"/></label>
+  <label>Management CIDRs (semicolon separated)<input @bind="managementCidrs" placeholder="10.103.20.0/24"/></label>
+  <label>Site notes<input @bind="notes" maxlength="300"/></label>
+ </div>
+ @if(isOperator){<button @onclick="SaveSiteAsync">Save site details</button>}
+ <p class="muted">The site registry and metadata are SQL-backed. Management CIDRs are documented planning values, not authorization to scan or contact every IP in a subnet.</p>
+ </section>
+}
+else if(step==2)
+{
+ <section class="panel">
+ <h2>Step 2 — Assign existing inventory or perform authorized reads</h2>
+ <p>Existing devices retain their running settings. Assignment updates only the site registry, membership and effective-dated placement history.</p>
+ <div class="formgrid">
+  <label>Device inventory<select @bind="selectedDevice"><option value="">Select device...</option>
+   @foreach(var item in devices){<option value="@item.Id.ToString()">@item.Name · @item.Kind · @item.ManagementIp @(item.IsSimulated?"[SIMULATED]":"[REAL]")</option>}
+  </select></label>
+  <label>CX physical access ports<select @bind="portCount"><option value="24">24</option><option value="48">48</option></select></label>
+ </div>
+ @if(isOperator){
+ <div class="actionbar">
+ <button @onclick="AssignAsync">Assign existing device to site</button>
+ <button class="secondary" @onclick="ProbeAsync">Run authorized read-only device probe</button>
+ </div>
+ }
+ <p class="muted">The read-only probe connects only to the selected inventory device using its configured credential and network allowlist. It does not perform subnet scanning. AP-505/AP-535 and CX 6100/6200 are supported inventory families; model/SKU and firmware capabilities must be separately verified.</p>
+ <h3>Assigned devices</h3>
+ <table><thead><tr><th>Device</th><th>Model</th><th>Management</th><th>Firmware</th><th>State</th></tr></thead><tbody>
+ @foreach(var item in assigned){<tr><td>@item.Name</td><td>@item.Kind</td><td>@item.ManagementIp</td><td>@(item.Firmware??"Unknown")</td><td>@item.LastStatus</td></tr>}
+ </tbody></table>
+ </section>
+}
+else if(step==3)
+{
+ <section class="panel">
+ <h2>Step 3 — Discover, inspect and confirm topology</h2>
+ <p>Only observed LLDP/interface links are shown. Links with uncertain endpoints or stale evidence cannot be confirmed.</p>
+ @if(links.Count==0){<p class="muted">No observed topology links for the assigned devices. Discover from supported REST telemetry or record/verify physical connectivity; unknown paths block real-device deployment.</p>}
+ else{
+ <table><thead><tr><th>Local switch/AP</th><th>Interface</th><th>Peer</th><th>Peer port</th><th>Evidence</th><th>Observed UTC</th><th>Confirm</th></tr></thead><tbody>
+ @foreach(var l in links){
+ <tr><td>@DeviceName(l.DeviceId)</td><td>@l.LocalPort</td><td>@(l.NeighborDeviceId is Guid id?DeviceName(id):l.NeighborName??"Unidentified")</td><td>@(l.NeighborPort??"Unknown")</td><td>@l.Evidence</td><td>@l.ObservedUtc.ToString("yyyy-MM-dd HH:mm")</td><td>
+ @if(isOperator && l.Evidence!="Confirmed" && l.NeighborDeviceId.HasValue){
+ <button class="secondary" @onclick="()=>ConfirmLinkAsync(l.Id)">Confirm observed link</button>
+ }</td></tr>
+ }
+ </tbody></table>}
+ <label>Verification evidence/reason<input @bind="topologyReason" maxlength="180" placeholder="Confirmed from current switch LLDP and onsite cabling"/></label>
+ <p class="muted">Confirming a link records operator responsibility; it does not create a device link or guarantee an uninterrupted management path.</p>
+ <p><a href="/topology">Open topology and placement view</a></p>
+ </section>
+}
+else if(step==4)
+{
+ <section class="panel">
+ <h2>Step 4 — Assign a different global template to each AP or switch</h2>
+ <div class="formgrid">
+  <label>Device<select @bind="selectedDevice"><option value="">Choose assigned device...</option>@foreach(var item in assigned){<option value="@item.Id.ToString()">@item.Name (@item.Kind)</option>}</select></label>
+  <label>Compatible global template<select @bind="selectedTemplate"><option value="">Select template...</option>
+  @foreach(var item in templates){<option value="@item.Id.ToString()">@item.Name (v@item.Version)</option>}
+  </select></label>
+ </div>
+ <label>Assignment reason<input @bind="reason" maxlength="180"/></label>
+ @if(isOperator){<button @onclick="AssignTemplateAsync">Pin template to this device</button>}
+ <p class="muted">Model/24-48 compatibility is validated server-side; each switch and AP has its own version pin. The site and other devices remain unchanged.</p>
+ <p><a href="/template-library">Manage global templates</a> · <a href="/device-inheritance">View provenance</a></p>
+ </section>
+}
+else if(step==5)
+{
+ <section class="panel">
+ <h2>Step 5 — Site configuration variances</h2>
+ <p>Apply only approved site-specific deviations from the per-device global baselines; these are inherited by compatible devices at this site.</p>
+ <label>Site overrides JSON<textarea @bind="siteOverrideJson" rows="10" spellcheck="false"></textarea></label>
+ <div class="formgrid">
+ <label>Site baseline group (legacy global location policy)
+ <select @bind="selectedSiteGroup"><option value="">Select baseline group...</option>
+ @foreach(var item in siteGlobals){<option value="@item.Id.ToString()">@item.Name (v@item.Version)</option>}
+ </select></label>
+ <label>Operational reason<input @bind="reason" maxlength="180"/></label>
+ </div>
+ @if(isOperator){<button @onclick="SaveSiteOverrideAsync">Save site overrides</button>}
+ <p class="muted">The site-level baseline group is used for the location record; individual devices continue to use their independently selected catalog templates. RF and VLAN cross-field validation is enforced.</p>
+ </section>
+}
+else if(step==6)
+{
+ <section class="panel">
+ <h2>Step 6 — Individual device exceptions</h2>
+ <div class="formgrid"><label>Device<select @bind="selectedDevice"><option value="">Choose assigned device...</option>@foreach(var item in assigned){<option value="@item.Id.ToString()">@item.Name · @item.Kind</option>}</select></label></div>
+ <label>Device override JSON<textarea @bind="deviceOverrideJson" rows="10" spellcheck="false"></textarea></label>
+ <label>Reason and impact<input @bind="reason" maxlength="180"/></label>
+ @if(isOperator){<button @onclick="SaveDeviceOverrideAsync">Save device-specific desired settings</button>}
+ <p>For visual CX port settings, naming and profiles use <a href="/port-manager">Switch Port Manager</a>. For AP SSID and RF policy use <a href="/wlan-profiles">WLAN Profiles</a>. Real hardware changes still require separate certification.</p>
+ </section>
+}
+else if(step==7)
+{
+ <section class="panel">
+ <h2>Step 7 — Review effective configuration and connection risks</h2>
+ <p>Each device is compared with its pinned global template plus site and device overrides. Any missing template, unknown topology or unverified firmware needs operator attention before live deployment.</p>
+ <button class="secondary" @onclick="ReviewAsync">Refresh validation</button>
+ @foreach(var item in review){
+  <details><summary>@item.DeviceName · @item.Status</summary>
+  <pre><code>@item.Summary</code></pre>
+  </details>
+ }
+ @if(status?.Blockers.Count>0){<p class="banner">Outstanding blockers prevent a certified physical rollout. You may still create a read-only/simulation plan.</p>}
+ </section>
+}
+else if(step==8)
+{
+ <section class="panel">
+ <h2>Step 8 — Approvals and dependency-aware deployment</h2>
+ <p>Review the management path, confirmed LLDP links, uplinks and staged VLAN changes before requesting approval. An authorized, firmware-certified adapter and verified prechange backup are required before physical writes.</p>
+ <p><a href="/deployment-manager">Open Deployment Manager to prepare a read-only dependency plan, obtain approval and rehearse simulation rollback</a>.</p>
+ <p class="muted">The site wizard does not invoke physical switch or AP writes by itself.</p>
+ </section>
+}
+else if(step==9)
+{
+ <section class="panel">
+ <h2>Step 9 — Verify, compare and retain evidence</h2>
+ <p>Compare approved desired state with freshly verified physical readback and record drift, unknown values and remediation proposals. Failure to reconnect is never counted as successful deployment.</p>
+ <p><a href="/configuration-variance">View Configuration Variance &amp; Reporting</a> · <a href="/configuration-import">Review encrypted configuration backups</a> · <a href="/deployment-manager">Review deployment outcomes</a></p>
+ </section>
+}
+<div class="actionbar">
+ <button class="secondary" disabled="@(step==1)" @onclick="PreviousAsync">Previous</button>
+ <button disabled="@(step==9)" @onclick="NextAsync">Save progress and continue</button>
+</div>
+@if(message.Length>0){<p role="status" class="feedback @(error?"error":"")">@message</p>}
+
+@code{
+ private sealed record ReviewEntry(string DeviceName,string Status,string Summary);
+ private List<Location> sites=new();
+ private List<Device> devices=new(),assigned=new();
+ private List<TopologyLink> links=new();
+ private List<PolicyTemplate> templates=new(),siteGlobals=new();
+ private List<ReviewEntry> review=new();
+ private SiteWizardService.Status? status;
+ private string siteId="",selectedDevice="",selectedTemplate="",selectedSiteGroup="",code="",
+  name="",type="Station",formation="",address="",buildings="",managementCidrs="",
+  notes="",topologyReason="",reason="Authorized configuration and site variance review",
+  siteOverrideJson=SiteConfigurationPolicy.EmptyOverride,
+  deviceOverrideJson=SiteConfigurationPolicy.EmptyOverride,message="";
+ private int step=1,portCount=24;
+ private bool isOperator,error;
+ protected override async Task OnInitializedAsync(){
+  isOperator=JcfRoles.IsOperator((await Auth.GetAuthenticationStateAsync()).User);
+  await ReloadAsync();
+ }
+ private string Actor(System.Security.Claims.ClaimsPrincipal principal)=>
+  principal.Identity?.Name??throw new UnauthorizedAccessException("Authenticated operator required.");
+ private Guid Id()=>Guid.TryParse(siteId,out var value)?value:
+    throw new ArgumentException("Save or select a registered site first.");
+ private async Task ReloadAsync(){
+  await using var db=await DbFactory.CreateDbContextAsync();
+  sites=await db.Locations.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  devices=await db.Devices.AsNoTracking().OrderBy(x=>x.Name).ToListAsync();
+  templates=(await Catalog.ListAsync()).Where(x=>x.Scope==TemplateCatalogService.ActiveScope).ToList();
+  siteGlobals=await db.PolicyTemplates.AsNoTracking().Where(x=>x.Scope=="Global").OrderBy(x=>x.Name).ToListAsync();
+  await SiteChangedAsync(false);
+ }
+ private async Task SiteChangedAsync()=>await SiteChangedAsync(true);
+ private async Task SiteChangedAsync(bool clear=false){
+  assigned=Guid.TryParse(siteId,out var loc)?devices.Where(x=>x.LocationId==loc).ToList():new();
+  var ids=assigned.Select(x=>x.Id).ToHashSet();
+  await using var db=await DbFactory.CreateDbContextAsync();
+  links=await db.TopologyLinks.AsNoTracking().Where(x=>ids.Contains(x.DeviceId))
+   .OrderBy(x=>x.DeviceId).ThenBy(x=>x.LocalPort).ToListAsync();
+  if(Guid.TryParse(siteId,out loc)){
+   var details=await Wizard.ReadDetailsAsync(loc);
+   if(details is not null){
+    code=details.Code;name=details.Name;type=details.Type;formation=details.Formation;
+    address=details.Address??"";buildings=string.Join(";",details.Buildings);
+    managementCidrs=string.Join(";",details.ManagementCidrs);notes=details.Notes;
+   }
+   var progress=await Wizard.ReadProgressAsync(loc);
+   if(clear)step=progress?.Step??1;
+   status=await Wizard.ReviewAsync(loc);
+   try{
+    var sitePolicy=await Sites.ResolveSiteAsync(loc);
+    selectedSiteGroup=sitePolicy.GlobalTemplateId.ToString();
+    siteOverrideJson=sitePolicy.OverrideJson;
+   }catch(KeyNotFoundException){selectedSiteGroup=siteGlobals.FirstOrDefault()?.Id.ToString()??"";}
+  } else{status=null;if(clear)step=1;}
+ }
+ private string DeviceName(Guid id)=>devices.FirstOrDefault(x=>x.Id==id)?.Name??"Unregistered endpoint";
+ private async Task SaveSiteAsync(){
+  try{
+   var principal=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(principal);
+   var details=new SiteWizardService.Details(code,name,type,address,formation,
+    buildings.Split(';',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries),
+    managementCidrs.Split(';',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries),notes);
+   var saved=await Wizard.SaveDetailsAsync(Guid.TryParse(siteId,out var id)?id:null,details,Actor(principal));
+   siteId=saved.Id.ToString();message="Site metadata registered. No network configuration changed.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task AssignAsync(){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   if(!Guid.TryParse(selectedDevice,out var d))throw new ArgumentException("Select an inventory device.");
+   var item=devices.Single(x=>x.Id==d);
+   if(!await DbHasSiteGroupAsync(Id()))
+    throw new InvalidOperationException("Create a site configuration group on the Global → Site Configuration page first.");
+   await Sites.AssignDeviceAsync(d,Id(),item.IsAccessPoint?null:portCount,Actor(p));
+   message="Device assigned; existing physical configuration unchanged.";error=false;
+   await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task<bool> DbHasSiteGroupAsync(Guid locationId){
+  await using var db=await DbFactory.CreateDbContextAsync();
+  return await db.PolicyTemplates.AnyAsync(x=>x.Scope=="Site"&&x.LocationId==locationId);
+ }
+ private async Task ProbeAsync(){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   if(!Guid.TryParse(selectedDevice,out var id))throw new ArgumentException("Select an inventory device.");
+   var result=await DeviceProbe.ProbeAsync(id,Actor(p));
+   message=result.Connected?"Read-only inventory probe completed.": "Probe failed. Review target IP, API/certificate credentials and routes.";
+   error=!result.Connected;await ReloadAsync();
+  }catch(Exception ex){message="Probe unavailable: "+ex.GetType().Name;error=true;}
+ }
+ private async Task ConfirmLinkAsync(Guid linkId){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   await Wizard.ConfirmObservedLinkAsync(linkId,Actor(p),topologyReason);
+   message="Topology link manually confirmed and audited.";error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task AssignTemplateAsync(){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   if(!Guid.TryParse(selectedDevice,out var dev)||!Guid.TryParse(selectedTemplate,out var t))
+    throw new ArgumentException("Choose an assigned device and global template.");
+   if(!assigned.Any(x=>x.Id==dev))throw new InvalidOperationException("Device must be at selected site.");
+   await Catalog.AssignAsync(dev,t,Actor(p),reason);
+   message="Per-device template pinned; no other switch or AP modified.";error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SaveSiteOverrideAsync(){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   var loc=Id();
+   if(!Guid.TryParse(selectedSiteGroup,out var g))throw new ArgumentException("Choose a site base configuration group.");
+   if(await DbHasSiteGroupAsync(loc)) await Sites.UpdateSiteAsync(loc,g,siteOverrideJson,Actor(p));
+   else await Sites.CreateSiteAsync(loc,g,siteOverrideJson,Actor(p));
+   message="Site override saved; physical configuration remains unchanged.";error=false;await ReloadAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task SaveDeviceOverrideAsync(){
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   if(!Guid.TryParse(selectedDevice,out var dev)||!assigned.Any(x=>x.Id==dev))
+    throw new ArgumentException("Choose a device assigned to this site.");
+   await Catalog.SetDeviceOverrideAsync(dev,deviceOverrideJson,Actor(p),reason);
+   message="Device override versioned in SQL; no device changes.";error=false;
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+ private async Task ReviewAsync(){
+  review=new();
+  foreach(var d in assigned){
+   try{
+    var eff=await Catalog.ResolveDeviceAsync(d.Id);
+    review.Add(new(d.Name,"Desired resolved",eff.Resolved.DesiredJson));
+   }catch(Exception ex) when(ex is InvalidOperationException or KeyNotFoundException or ArgumentException){
+    review.Add(new(d.Name,"BLOCKED",ex.Message));
+   }
+  }
+  status=await Wizard.ReviewAsync(Id());
+  message="Site readiness evaluated; missing evidence must be resolved before any real deployment.";error=false;
+ }
+ private async Task PreviousAsync(){step=Math.Max(1,step-1);await ProgressAsync();}
+ private async Task NextAsync(){step=Math.Min(9,step+1);await ProgressAsync();}
+ private async Task ProgressAsync(){
+  if(!Guid.TryParse(siteId,out var id))return;
+  try{
+   var p=(await Auth.GetAuthenticationStateAsync()).User;JcfRoles.RequireOperator(p);
+   await Wizard.SaveProgressAsync(id,step,Array.Empty<string>(),Actor(p));
+   status=await Wizard.ReviewAsync(id);
+   if(step==7)await ReviewAsync();
+  }catch(Exception ex){message=ex.Message;error=true;}
+ }
+}
