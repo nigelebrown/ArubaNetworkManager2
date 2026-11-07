@@ -137,9 +137,9 @@ public sealed class SwitchPortManagerService(IDbContextFactory<NetworkDbContext>
             }catch(JsonException){}
              catch(KeyNotFoundException){}
         }
-        var discovered=new HashSet<string>(newest.Keys.Where(PortPattern.IsMatch),StringComparer.Ordinal);
-        discovered.UnionWith(readback.Keys.Where(PortPattern.IsMatch));
-        discovered.UnionWith(linkByPort.Keys.Where(PortPattern.IsMatch));
+        var discovered=new HashSet<string>(newest.Keys.Where(x=>PortPattern.IsMatch(x)),StringComparer.Ordinal);
+        discovered.UnionWith(readback.Keys.Where(x=>PortPattern.IsMatch(x)));
+        discovered.UnionWith(linkByPort.Keys.Where(x=>PortPattern.IsMatch(x)));
         var expected=new HashSet<string>(StringComparer.Ordinal);
         for(var i=1;i<=declared.GetValueOrDefault();i++)expected.Add($"1/1/{i}");
         // Only expected access interfaces may be rendered as placeholders. Uplinks/stack
